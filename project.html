@@ -305,6 +305,14 @@ textarea.inp{resize:none;line-height:1.5}
 /* onboarding */
 #onb{position:absolute;inset:0;z-index:1000;background:var(--bg);display:flex;flex-direction:column;transition:opacity .6s, transform .6s var(--ease-ios)}
 #onb.gone{opacity:0;transform:scale(1.06);pointer-events:none}
+#splash{position:absolute;inset:0;z-index:1100;background:radial-gradient(circle at top,#111318 0%,#06070a 65%,#000 100%);display:flex;align-items:center;justify-content:center;transition:opacity .7s var(--ease-ios), transform .7s var(--ease-ios);overflow:hidden}
+#splash.fade{opacity:0;transform:scale(1.04);pointer-events:none}
+.splash-ring{position:absolute;border:2px solid rgba(255,255,255,.18);border-radius:50%;animation:spinSplash 2.4s linear infinite}
+.splash-core{position:relative;width:128px;height:128px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:46px;box-shadow:0 22px 60px rgba(0,0,0,.45);background:linear-gradient(140deg,rgba(110,139,255,.9),rgba(176,124,255,.75));color:#fff}
+.splash-core::before,.splash-core::after{content:'';position:absolute;border-radius:50%;border:1.5px solid rgba(255,255,255,.26)}
+.splash-core::before{width:92px;height:92px}
+.splash-core::after{width:64px;height:64px}
+@keyframes spinSplash{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 .obslide{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 34px 150px;opacity:0;transform:translateX(40px);transition:all .55s var(--ease-ios);pointer-events:none}
 .obslide.on{opacity:1;transform:none;pointer-events:auto}
 .aurora{position:absolute;border-radius:50%;filter:blur(60px);opacity:.5;animation:float 9s ease-in-out infinite}
@@ -347,6 +355,11 @@ mark{background:rgba(255,206,92,.32);color:inherit;border-radius:3px;padding:1px
       <div id="tabbar"></div>
       <div id="sheetwrap"><div id="scrim"></div><div id="sheet"><div class="grabber"></div><div id="sheetbody"></div></div></div>
       <div id="toast"></div>
+      <div id="splash">
+        <div class="splash-ring" style="width:190px;height:190px"></div>
+        <div class="splash-ring" style="width:240px;height:240px;animation-direction:reverse;opacity:.7"></div>
+        <div class="splash-core">🧭</div>
+      </div>
       <div id="onb"></div>
     </div>
     <div id="homebar"></div>
@@ -756,13 +769,11 @@ SCREENS.health=el=>{
       <div style="flex:1"><div style="font-weight:660;font-size:14.5px">Psychology Mode</div><div class="sub" style="font-size:13px;margin-top:2px">${PSYCH[new Date().getDate()%PSYCH.length]}</div></div>
     </div>
     <div style="height:12px"></div>
-  </div>
-  <button class="fab" id="urgefab">🆘 I'm having an urge</button>`;
+  </div>`;
   animRings(el);animBars(el);bindHabitRows(el);
   $$('[data-h]',el).forEach(b=>b.onclick=()=>{haptic();const k=b.dataset.h;
     if(k==='habits')openHabits();else if(k==='workout')openWorkoutHub();else if(k==='journal')openJournalHub();else if(k==='applehealth')openAppleHealth();else openMoodSheet();});
   $('#waterbtn',el).onclick=()=>{addWater();SCREENS.health(el);};
-  $('#urgefab',el).onclick=openUrge;
 };
 function habitRow(h){
   const done=!!h.log[todayKey()];
@@ -843,12 +854,15 @@ function newHabitSheet(cb){
     <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px" id="nhicons">
       ${icons.map((i,x)=>`<button class="pressable" data-i="${i}" style="aspect-ratio:1;border-radius:13px;background:var(--card-2);border:1.5px solid ${x===0?'var(--accent)':'transparent'};font-size:20px">${i}</button>`).join('')}
     </div>
+    <input class="inp" id="nhcustom" placeholder="Or type your own emoji" style="margin-top:12px" />
     <button class="btn primary" id="nhsave" style="width:100%;margin-top:20px">Create Habit</button></div>`,b=>{
     let icon='🌅';
     $$('#nhicons button',b).forEach(x=>x.onclick=()=>{icon=x.dataset.i;$$('#nhicons button',b).forEach(y=>y.style.borderColor='transparent');x.style.borderColor='var(--accent)';haptic();});
+    $('#nhcustom',b).oninput=e=>{const v=e.target.value.trim();if(v){icon=v;$$('#nhicons button',b).forEach(y=>y.style.borderColor='transparent');}};
     $('#nhsave',b).onclick=()=>{const n=$('#nhname',b).value.trim();if(!n)return toast('Name your habit');
       const colors=['#6E8BFF','#43E0B0','#FF8A6B','#FFCE5C','#B07CFF','#FF6B95'];
-      S.habits.push({id:uid(),name:n,icon,color:colors[S.habits.length%6],log:{},notes:'',created:todayKey()});
+      const customIcon=$('#nhcustom',b).value.trim();
+      S.habits.push({id:uid(),name:n,icon:customIcon||icon,color:colors[S.habits.length%6],log:{},notes:'',created:todayKey()});
       save();closeSheet();toast('Habit created');cb&&cb();};
   });
 }
@@ -1312,25 +1326,31 @@ function openMyGenres(){
     const draw=()=>{
       $('#genrelist',p).innerHTML=S.genres.length?S.genres.map(g=>{
         const count=Object.values(S.movies).filter(m=>m.userGenres?.includes(g.id)).length;
-        return `<button class="card pressable" data-gid="${g.id}" style="padding:14px 14px 12px;text-align:left;border:${g.color?`1.2px solid ${g.color}`:'1.2px solid var(--stroke)'}">
+        return `<div class="card pressable" data-gid="${g.id}" style="padding:14px 14px 12px;text-align:left;border:${g.color?`1.2px solid ${g.color}`:'1.2px solid var(--stroke)'}">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
             <div style="display:flex;align-items:center;gap:8px"><span style="font-size:18px">${esc(g.emoji||'🎭')}</span><div style="font-weight:700;font-size:15px">${esc(g.name)}</div></div>
-            <div class="tiny">${count} movies</div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <div class="tiny">${count} movies</div>
+              <button class="btn ghost sm" data-delgenre="${g.id}" style="padding:6px 8px">Delete</button>
+            </div>
           </div>
-        </button>`;
+        </div>`;
       }).join():'<div class="card" style="padding:22px;text-align:center"><div style="font-size:24px">🎭</div><div class="sub" style="margin-top:8px">No custom genres yet — create one to start organizing films.</div></div>';
       $$('[data-gid]',p).forEach(b=>b.onclick=()=>openGenreMovies(b.dataset.gid));
+      $$('[data-delgenre]',p).forEach(btn=>btn.onclick=e=>{e.stopPropagation();const id=btn.dataset.delgenre;S.genres=S.genres.filter(g=>g.id!==id);Object.values(S.movies).forEach(m=>{m.userGenres=m.userGenres?.filter(x=>x!==id)||[];});save();draw();toast('Genre deleted');});
     };
     draw();
     $('#addgenre',p).onclick=()=>openSheet(`<div><div style="text-align:center;font-weight:740;font-size:18px;margin:6px 0 14px">New Genre</div>
       <input class="inp" id="gname" placeholder="Genre name"><div class="eyebrow" style="margin:14px 0 8px">Emoji</div>
       <div style="display:flex;flex-wrap:wrap;gap:8px" id="gemojis">${['🎭','🎞️','🌙','💥','🧠','❤️','🪩','🌿','☕','🔥'].map((e,i)=>`<button class="chip${i?'':' on'}" data-e="${e}" style="font-size:18px">${e}</button>`).join('')}</div>
+      <input class="inp" id="gcustomemoji" placeholder="Or type your own emoji" style="margin-top:10px">
       <div class="eyebrow" style="margin:14px 0 8px">Color</div>
       <input class="inp" id="gcolor" type="color" value="#6E8BFF">
       <button class="btn primary" id="gsave" style="width:100%;margin-top:18px">Create Genre</button></div>`,b=>{
       let em='🎭';let color='#6E8BFF';$$('[data-e]',b).forEach(x=>x.onclick=()=>{em=x.dataset.e;$$('[data-e]',b).forEach(y=>y.classList.remove('on'));x.classList.add('on');});
+      $('#gcustomemoji',b).oninput=e=>{const v=e.target.value.trim();if(v)em=v;};
       $('#gcolor',b).oninput=e=>color=e.target.value;
-      $('#gsave',b).onclick=()=>{const n=$('#gname',b).value.trim();if(!n)return toast('Name your genre first');S.genres.push({id:uid(),name:n,emoji:em,color});save();closeSheet();draw();toast('Genre created');};});
+      $('#gsave',b).onclick=()=>{const n=$('#gname',b).value.trim();if(!n)return toast('Name your genre first');const customEmoji=$('#gcustomemoji',b).value.trim();S.genres.push({id:uid(),name:n,emoji:customEmoji||em,color});save();closeSheet();draw();toast('Genre created');};});
   });
 }
 function openGenreMovies(id){
@@ -1472,18 +1492,24 @@ function openFilmStats(){
 /* ─────────── READING ─────────── */
 let readingSuggestionsState={loading:false,loaded:false,items:[],lastQuery:'',searchItems:[]};
 async function searchBookSuggestions(query, limit=4){
-  const url=`https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&limit=${limit}&fields=key,title,author_name,cover_i,number_of_pages_median,first_publish_year`;
+  const url=`https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&limit=${limit}&fields=key,title,author_name,cover_i,number_of_pages_median,first_publish_year,ratings_average,subject`;
   const res=await fetch(url,{mode:'cors'});
   if(!res.ok) throw new Error('Book suggestions request failed');
   const data=await res.json();
-  return (data.docs||[]).filter(item=>item.title).slice(0,limit).map(item=>({
-    id:item.key||`${item.title}-${item.author_name?.[0]||'unknown'}`,
-    title:item.title || 'Untitled',
-    author:(item.author_name||[]).join(', ') || 'Unknown author',
-    pages:item.number_of_pages_median || 0,
-    thumbnail:item.cover_i ? `https://covers.openlibrary.org/b/id/${item.cover_i}-M.jpg` : '',
-    year:item.first_publish_year || ''
-  }));
+  return (data.docs||[])
+    .filter(item=>item.title)
+    .slice(0,limit)
+    .map(item=>({
+      id:item.key||`${item.title}-${item.author_name?.[0]||'unknown'}`,
+      title:item.title || 'Untitled',
+      author:(item.author_name||[]).join(', ') || 'Unknown author',
+      pages:item.number_of_pages_median || 0,
+      thumbnail:item.cover_i ? `https://covers.openlibrary.org/b/id/${item.cover_i}-M.jpg` : '',
+      year:item.first_publish_year || '',
+      rating:item.ratings_average || 0,
+      subjects:(item.subject||[]).slice(0,3)
+    }))
+    .sort((a,b)=>b.rating-a.rating || a.title.localeCompare(b.title));
 }
 function addGoogleBookToLibrary(book, refresh){
   if(!book) return;
@@ -1517,7 +1543,7 @@ async function loadBookSuggestions(root, refresh){
   root.innerHTML=`<div class="card" style="padding:14px"><div class="sub" style="font-size:13.5px">Loading suggestions…</div></div>`;
   readingSuggestionsState.loading=true;
   try{
-    const queries=['productivity','psychology','philosophy','self help','fiction'];
+    const queries=['bestseller','top books','must read','award winning fiction','self improvement','psychology'];
     const results=[];
     for(const q of queries){
       const items=await searchBookSuggestions(q,2);
@@ -1790,7 +1816,10 @@ SCREENS.profile=el=>{
         ${S.user.photo?`<img src="${S.user.photo}" style="width:100%;height:100%;object-fit:cover">`:esc(S.user.name[0]||'A')}</button>
       <input type="file" accept="image/*" id="avf" style="display:none">
       <div class="tiny" style="margin-top:10px;color:var(--accent)">Tap your photo to change it</div>
-      <div style="font-size:23px;font-weight:780;margin-top:12px;letter-spacing:-.03em">${esc(S.user.name)}</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:12px">
+        <input class="inp" id="profileName" value="${esc(S.user.name)}" placeholder="Your name" style="text-align:center;font-size:20px;font-weight:780;max-width:220px;padding:10px 12px;border-radius:999px;background:var(--card);border:1px solid var(--stroke)">
+        <button class="btn ghost sm" id="saveNameBtn">Save</button>
+      </div>
       <div class="tiny">Member since ${new Date(S.user.since+'T12:00:00').toLocaleDateString('en-US',{month:'long',year:'numeric'})}</div>
       <div class="sub" style="margin-top:8px;font-size:13px;text-align:center;max-width:270px;font-style:italic">“${esc(S.user.mantra)}”</div>
     </div>
@@ -1821,6 +1850,13 @@ SCREENS.profile=el=>{
   $('#avatar',el).onclick=()=>$('#avf',el).click();
   $('#avf',el).onchange=e=>{const f=e.target.files?.[0];if(!f)return;const r=new FileReader();
     r.onload=()=>{S.user.photo=r.result;save();SCREENS.profile(el);toast('Photo updated');};r.readAsDataURL(f);};
+  $('#saveNameBtn',el).onclick=()=>{
+    const next=$('#profileName',el).value.trim()||'Friend';
+    S.user.name=next;
+    save();
+    SCREENS.profile(el);
+    toast('Name updated');
+  };
   $('#gosettings',el).onclick=openSettings;
   $('#editname',el).onclick=editProfile;
   $('#yir',el).onclick=openYIR;
@@ -2030,12 +2066,18 @@ function boot(){
   $('#screens').innerHTML=TABS.map(t=>`<div class="screen tabview" id="scr-${t.id}"></div>`).join('');
   renderTabs();initPTR();
   if(!S.onboarded){S.onboarded=true;save(true);}
-  $('#onb').classList.add('gone');
-  $('#onb').style.display='none';
-  const el=$('#scr-home');el.classList.add('active');SCREENS.home(el);attachScroll(el,'North Star');
-  $('#tabbar').classList.remove('hidden');
-  window.matchMedia('(prefers-color-scheme: light)').addEventListener('change',()=>{if(S.theme==='system')applyTheme();});
-  document.addEventListener('keydown',e=>{if(e.key==='Escape'){if($('#sheetwrap').classList.contains('open'))closeSheet();else if(pageStack.length)popPage();}});
+  const splash=$('#splash');
+  const finishBoot=()=>{
+    $('#onb').classList.add('gone');
+    $('#onb').style.display='none';
+    splash.classList.add('fade');
+    setTimeout(()=>{splash.style.display='none';},700);
+    const el=$('#scr-home');el.classList.add('active');SCREENS.home(el);attachScroll(el,'North Star');
+    $('#tabbar').classList.remove('hidden');
+    window.matchMedia('(prefers-color-scheme: light)').addEventListener('change',()=>{if(S.theme==='system')applyTheme();});
+    document.addEventListener('keydown',e=>{if(e.key==='Escape'){if($('#sheetwrap').classList.contains('open'))closeSheet();else if(pageStack.length)popPage();}});
+  };
+  setTimeout(finishBoot,750);
 }
 boot();
 </script>
