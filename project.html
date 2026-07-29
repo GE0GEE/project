@@ -385,10 +385,12 @@ mark{background:rgba(255,206,92,.32);color:inherit;border-radius:3px;padding:1px
     <div id="homebar"></div>
   </div>
 </div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>
 /* ══════════════════════════════════════════════════════════
    NORTH STAR — state, storage, helpers
    ══════════════════════════════════════════════════════════ */
+if(window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 const LS='northstar.v1';
 const STORAGE_VERSION='northstar.v2';
 const todayKey=(d=new Date())=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -441,14 +443,8 @@ function load(){
 }
 function deepMerge(t,s){for(const k in s){if(s[k]&&typeof s[k]==='object'&&!Array.isArray(s[k])&&t[k]&&typeof t[k]==='object'&&!Array.isArray(t[k]))deepMerge(t[k],s[k]);else t[k]=s[k];}return t;}
 let saveT;
-function save(silent){clearTimeout(saveT);saveT=setTimeout(()=>{
-  try{
-    localStorage.setItem(STORAGE_VERSION,JSON.stringify(S));
-    localStorage.setItem(LS,JSON.stringify(S));
-  }catch(e){
-    console.warn('Storage write failed',e);
-  }
-},120);if(!silent)island('Saved to device');}
+function saveNow(){try{localStorage.setItem(STORAGE_VERSION,JSON.stringify(S));localStorage.setItem(LS,JSON.stringify(S));return true;}catch(e){console.warn('Storage write failed',e);return false;}}
+function save(silent){clearTimeout(saveT);saveT=setTimeout(saveNow,120);if(!silent)island('Saved to device');}
 /* ─── haptics-ish + toast + dynamic island ─── */
 function haptic(){if(navigator.vibrate)navigator.vibrate(9);}
 let toastT;
@@ -1715,6 +1711,7 @@ function openBook(id){
     $('#bdel',p).onclick=()=>{S.books=S.books.filter(x=>x.id!==id);save();popPage();setTimeout(()=>SCREENS.reading($('#scr-reading')),50);};
   });
 }
+const pdfDocCache=new Map();
 function openPDFHub(){
   pushPage('PDF Reader',`<div class="wrap" style="padding-top:10px">
     <button class="btn primary" id="imp" style="width:100%">📄 Import PDF from iPhone</button>
@@ -1727,29 +1724,66 @@ function openPDFHub(){
     <div style="height:24px"></div></div>`,p=>{
     const draw=()=>{
       $('#pdflist',p).innerHTML=S.pdfs.length?S.pdfs.map(f=>`<div class="card pressable" data-pdf="${f.id}" style="padding:14px;display:flex;gap:12px;align-items:center">
-        <div style="width:40px;height:52px;border-radius:7px;background:linear-gradient(140deg,#FF6B6B33,#FF8A6B22);display:flex;align-items:center;justify-content:center;font-size:18px">📄</div>
+        ${f.thumb?`<img src="${f.thumb}" style="width:40px;height:52px;border-radius:7px;object-fit:cover;flex:0 0 auto;box-shadow:0 4px 10px rgba(0,0,0,.35)">`
+          :`<div style="width:40px;height:52px;border-radius:7px;background:linear-gradient(140deg,#FF6B6B33,#FF8A6B22);display:flex;align-items:center;justify-content:center;font-size:18px;flex:0 0 auto">${f.processing?'<div class="spin" style="width:16px;height:16px;border-width:2px"></div>':'📄'}</div>`}
         <div style="flex:1;min-width:0"><div style="font-weight:640;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(f.name)}</div>
-        <div class="tiny">${f.size} · page ${f.page||1} · ${f.mins||0} min read</div>
+        <div class="tiny">${f.size} · ${f.processing?'Processing…':`page ${f.page||1} of ${f.pages||'…'}`} · ${f.mins||0} min read${f.data?'':' · preview only'}</div>
         <div class="pbar" style="margin-top:6px;height:4px"><i style="width:${f.pct||0}%"></i></div></div><span class="chev">›</span></div>`).join('')
         :'<div class="card" style="padding:22px;text-align:center"><div style="font-size:26px">📄</div><div class="sub" style="margin-top:8px">Import a PDF to read it distraction-free.</div></div>';
       $$('[data-pdf]',p).forEach(b=>b.onclick=()=>openPDFReader(b.dataset.pdf));
     };draw();
     $('#imp',p).onclick=()=>$('#pdff',p).click();
-    $('#pdff',p).onchange=e=>{const f=e.target.files[0];if(!f)return;
-      const rec={id:uid(),name:f.name,size:(f.size/1048576).toFixed(1)+' MB',page:1,pages:Math.max(12,Math.round(f.size/40000)),pct:0,mins:0,bookmarks:[],highlights:[],added:todayKey()};
-      const r=new FileReader();r.onload=()=>{try{rec.data=r.result.length<3500000?r.result:null;}catch(x){}
-        S.pdfs.unshift(rec);save();draw();toast('PDF imported');island('PDF ready 📄');};r.readAsDataURL(f);};
+    $('#pdff',p).onchange=e=>{
+      const file=e.target.files[0];e.target.value='';if(!file)return;
+      if(file.type&&file.type!=='application/pdf'&&!/\.pdf$/i.test(file.name)){toast('That file isn\'t a PDF');return;}
+      const rec={id:uid(),name:file.name,size:(file.size/1048576).toFixed(1)+' MB',page:1,pages:null,pct:0,mins:0,bookmarks:[],highlights:[],notes:'',added:todayKey(),processing:true};
+      S.pdfs.unshift(rec);draw();island('Importing PDF…');
+      const r=new FileReader();
+      r.onerror=()=>{S.pdfs=S.pdfs.filter(x=>x.id!==rec.id);draw();toast('Could not read that file');};
+      r.onload=async()=>{
+        const dataUrl=r.result;
+        if(!window.pdfjsLib){rec.processing=false;rec.pages=rec.pages||1;draw();toast('PDF viewer failed to load — check your connection');return;}
+        try{
+          const doc=await pdfjsLib.getDocument(dataUrl).promise;
+          rec.pages=doc.numPages;
+          rec.data=dataUrl.length<4500000?dataUrl:null;
+          try{
+            const page=await doc.getPage(1);
+            const vp0=page.getViewport({scale:1});
+            const scale=140/vp0.width;
+            const vp=page.getViewport({scale});
+            const canvas=document.createElement('canvas');
+            canvas.width=vp.width;canvas.height=vp.height;
+            await page.render({canvasContext:canvas.getContext('2d'),viewport:vp}).promise;
+            rec.thumb=canvas.toDataURL('image/jpeg',.75);
+          }catch(te){}
+          rec.processing=false;
+          let ok=saveNow();
+          if(!ok&&rec.data){rec.data=null;ok=saveNow();}
+          if(!ok){S.pdfs=S.pdfs.filter(x=>x.id!==rec.id);saveNow();draw();toast('That PDF is too large to import');return;}
+          draw();toast(rec.data?'PDF imported':'Imported — file too large to store fully, showing preview only');island('PDF ready 📄');
+        }catch(err){
+          console.warn('PDF import failed',err);
+          S.pdfs=S.pdfs.filter(x=>x.id!==rec.id);saveNow();draw();
+          toast(/password/i.test(err?.name||err?.message||'')?'That PDF is password-protected':'Could not open that PDF — it may be corrupted');
+        }
+      };
+      r.readAsDataURL(file);
+    };
   });
 }
 function openPDFReader(id){
   const f=S.pdfs.find(x=>x.id===id);if(!f)return;
+  const canRender=!!(f.data&&window.pdfjsLib);
   pushPage(f.name.replace(/\.pdf$/i,''),`<div style="padding:0 0 20px">
     <div class="wrap"><div class="card" style="padding:14px;display:flex;gap:10px;align-items:center">
-      <div style="flex:1"><div class="tiny">Page ${f.page} of ${f.pages}</div><div class="pbar" style="margin-top:6px"><i style="width:${Math.round(f.page/f.pages*100)}%"></i></div></div>
+      <div style="flex:1"><div class="tiny" id="pageInd">Page ${f.page} of ${f.pages||'…'}</div><div class="pbar" style="margin-top:6px"><i id="pageBar" style="width:${Math.round(f.page/(f.pages||f.page)*100)}%"></i></div></div>
       <button class="btn ghost sm" id="bmk">🔖</button><button class="btn ghost sm" id="srch">🔎</button></div></div>
-    <div class="wrap"><div class="card" style="margin-top:14px;padding:20px" class="reader">
-      <div class="reader"><p>Inline PDF preview is disabled in this local-file view.</p>
-      <p>Your <mark>reading progress</mark>, bookmarks, highlights and time-read are still preserved locally between sessions.</p></div></div></div>
+    ${canRender?
+      `<div class="wrap"><div class="card" id="pdfCanvasWrap" style="margin-top:14px;padding:14px;display:flex;justify-content:center;align-items:flex-start;min-height:240px"><div class="spin"></div></div></div>`
+      :`<div class="wrap"><div class="card" style="margin-top:14px;padding:20px">
+        <div class="reader"><p>${f.data?'The PDF viewer couldn\'t load — check your connection and reopen this file.':'This file was too large to store fully on-device, so it can\'t be shown here.'}</p>
+        <p>Your <mark>reading progress</mark>, bookmarks and notes are still tracked. ${f.data?'':'Re-import a smaller PDF (under ~4 MB) to read it in full.'}</p></div></div></div>`}
     <div class="wrap">
       <div style="display:flex;gap:10px;margin-top:16px">
         <button class="btn ghost" id="prev" style="flex:1">‹ Prev</button>
@@ -1760,12 +1794,52 @@ function openPDFReader(id){
       <div class="sec-title" style="margin-top:20px">Notes</div>
       <textarea class="inp" id="pn" rows="4" placeholder="Annotations…">${esc(f.notes||'')}</textarea>
     </div></div>`,p=>{
-    const drawB=()=>$('#bml',p).innerHTML=(f.bookmarks||[]).length?f.bookmarks.map(b=>`<div class="row"><div class="ico" style="background:rgba(255,206,92,.18)">🔖</div><div class="lbl" style="font-size:15px">Page ${b}</div></div>`).join(''):'<div class="row"><div class="lbl sub">No bookmarks yet.</div></div>';
-    drawB();
+    const drawB=()=>$('#bml',p).innerHTML=(f.bookmarks||[]).length?f.bookmarks.map(b=>`<div class="row pressable" data-gopage="${b}"><div class="ico" style="background:rgba(255,206,92,.18)">🔖</div><div class="lbl" style="font-size:15px">Page ${b}</div></div>`).join(''):'<div class="row"><div class="lbl sub">No bookmarks yet.</div></div>';
+    const updateHeader=()=>{
+      $('#pageInd',p).textContent=`Page ${f.page} of ${f.pages||'…'}`;
+      $('#pageBar',p).style.width=Math.round(f.page/(f.pages||f.page)*100)+'%';
+    };
+    let renderToken=0;
+    const renderPage=async()=>{
+      if(!canRender)return;
+      const wrap=$('#pdfCanvasWrap',p);if(!wrap)return;
+      const myToken=++renderToken;
+      wrap.innerHTML='<div class="spin"></div>';
+      try{
+        let cached=pdfDocCache.get(id);
+        if(!cached){
+          const doc=await pdfjsLib.getDocument(f.data).promise;
+          cached={doc};pdfDocCache.set(id,cached);
+          if(f.pages!==doc.numPages){f.pages=doc.numPages;save(true);updateHeader();}
+        }
+        const page=await cached.doc.getPage(Math.min(f.page,cached.doc.numPages));
+        if(myToken!==renderToken)return;
+        const containerWidth=(wrap.clientWidth||332)-28;
+        const vp0=page.getViewport({scale:1});
+        const dpr=Math.min(window.devicePixelRatio||1,2.5);
+        const scale=(containerWidth/vp0.width)*dpr;
+        const vp=page.getViewport({scale});
+        const canvas=document.createElement('canvas');
+        canvas.width=Math.round(vp.width);canvas.height=Math.round(vp.height);
+        canvas.style.width=Math.round(vp.width/dpr)+'px';
+        canvas.style.height=Math.round(vp.height/dpr)+'px';
+        canvas.style.borderRadius='8px';
+        canvas.style.boxShadow='0 10px 30px rgba(0,0,0,.35)';
+        await page.render({canvasContext:canvas.getContext('2d'),viewport:vp}).promise;
+        if(myToken!==renderToken)return;
+        wrap.innerHTML='';wrap.appendChild(canvas);
+      }catch(err){
+        console.warn('PDF render failed',err);
+        if(myToken===renderToken)wrap.innerHTML='<div class="sub" style="padding:20px;text-align:center">Couldn\'t render this page.</div>';
+      }
+    };
+    const goPage=n=>{f.page=Math.max(1,Math.min(f.pages||n,n));f.pct=Math.round(f.page/(f.pages||f.page)*100);save(true);updateHeader();renderPage();};
+    drawB();renderPage();
     $('#bmk',p).onclick=()=>{f.bookmarks=f.bookmarks||[];if(!f.bookmarks.includes(f.page))f.bookmarks.push(f.page);save();drawB();toast('Bookmarked page '+f.page);};
     $('#srch',p).onclick=()=>toast('Search opens the in-document finder');
-    $('#prev',p).onclick=()=>{f.page=Math.max(1,f.page-1);f.pct=Math.round(f.page/f.pages*100);save(true);popPage();setTimeout(()=>openPDFReader(id),120);};
-    $('#next',p).onclick=()=>{f.page=Math.min(f.pages,f.page+1);f.pct=Math.round(f.page/f.pages*100);save(true);popPage();setTimeout(()=>openPDFReader(id),120);};
+    $('#prev',p).onclick=()=>goPage(f.page-1);
+    $('#next',p).onclick=()=>goPage(f.page+1);
+    $$('[data-gopage]',p).forEach(el=>el.onclick=()=>goPage(+el.dataset.gopage));
     $('#pn',p).oninput=e=>{f.notes=e.target.value;save(true);};
   });
 }
