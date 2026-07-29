@@ -273,9 +273,14 @@ textarea.inp{resize:none;line-height:1.5}
 .hscroll{display:flex;gap:13px;overflow-x:auto;padding:2px 18px 6px;scroll-snap-type:x mandatory}
 .hscroll > *{scroll-snap-align:start;flex:0 0 auto}
 /* poster */
-.poster{border-radius:12px;overflow:hidden;background:var(--card-2);position:relative;box-shadow:0 10px 24px rgba(0,0,0,.4)}
+.poster{border-radius:12px;overflow:hidden;background:var(--card-2);position:relative;box-shadow:0 10px 24px rgba(0,0,0,.4);min-width:0}
 .poster img{width:100%;height:100%;object-fit:cover;display:block}
 .poster .ph{width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:22px;opacity:.3}
+/* Grid items default to min-width:auto, which lets a long nowrap movie
+   title force its column wider than the others and squash the rest —
+   this class (used for category/watched/watchlist grids) fixes that. */
+.poster-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.poster-grid>*{min-width:0}
 /* habit check */
 .hcheck{width:30px;height:30px;border-radius:50%;border:2px solid var(--stroke-strong);display:flex;align-items:center;justify-content:center;transition:all .35s var(--spring);flex:0 0 auto}
 .hcheck.done{background:var(--mint);border-color:var(--mint);transform:scale(1.06)}
@@ -305,14 +310,22 @@ textarea.inp{resize:none;line-height:1.5}
 /* onboarding */
 #onb{position:absolute;inset:0;z-index:1000;background:var(--bg);display:flex;flex-direction:column;transition:opacity .6s, transform .6s var(--ease-ios)}
 #onb.gone{opacity:0;transform:scale(1.06);pointer-events:none}
-#splash{position:absolute;inset:0;z-index:1100;background:radial-gradient(circle at top,#111318 0%,#06070a 65%,#000 100%);display:flex;align-items:center;justify-content:center;transition:opacity .7s var(--ease-ios), transform .7s var(--ease-ios);overflow:hidden}
+#splash{position:absolute;inset:0;z-index:1100;background:radial-gradient(circle at 50% 38%,#15161d 0%,#0a0a0d 55%,#000 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;transition:opacity .7s var(--ease-ios), transform .7s var(--ease-ios);overflow:hidden}
 #splash.fade{opacity:0;transform:scale(1.04);pointer-events:none}
-.splash-ring{position:absolute;border:2px solid rgba(255,255,255,.18);border-radius:50%;animation:spinSplash 2.4s linear infinite}
-.splash-core{position:relative;width:128px;height:128px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:46px;box-shadow:0 22px 60px rgba(0,0,0,.45);background:linear-gradient(140deg,rgba(110,139,255,.9),rgba(176,124,255,.75));color:#fff}
-.splash-core::before,.splash-core::after{content:'';position:absolute;border-radius:50%;border:1.5px solid rgba(255,255,255,.26)}
-.splash-core::before{width:92px;height:92px}
-.splash-core::after{width:64px;height:64px}
+.splash-sky{position:absolute;inset:0;overflow:hidden}
+.splash-sky .star{position:absolute;background:#fff;border-radius:50%}
+.splash-orbit{position:absolute;width:206px;height:206px;border-radius:50%;border:1px solid rgba(255,255,255,.09);animation:spinSplash 7s linear infinite}
+.splash-orbit::before{content:'';position:absolute;top:-2.5px;left:50%;width:5px;height:5px;margin-left:-2.5px;border-radius:50%;background:#fff;box-shadow:0 0 8px 2px rgba(255,255,255,.85)}
+.splash-glow{position:absolute;width:180px;height:180px;border-radius:50%;background:radial-gradient(circle,rgba(110,139,255,.5),rgba(176,124,255,0) 70%);filter:blur(18px);animation:pulseGlow 2.4s ease-in-out infinite}
+.splash-core{position:relative;width:112px;height:112px;border-radius:32px;display:flex;align-items:center;justify-content:center;box-shadow:0 22px 50px rgba(90,90,220,.28),0 6px 18px rgba(0,0,0,.5);background:linear-gradient(150deg,#7C97FF,#B07CFF 62%,#FF8FAE);animation:coreFloat 2.4s ease-in-out infinite}
+.splash-core svg{width:52px;height:52px;filter:drop-shadow(0 2px 6px rgba(0,0,0,.25));animation:starTwinkle 2.4s ease-in-out infinite}
+.splash-word{margin-top:26px;font-size:20px;font-weight:750;letter-spacing:.14em;color:#fff;opacity:0;animation:wordIn .7s var(--ease-ios) .35s forwards}
+.splash-tag{margin-top:7px;font-size:12.5px;font-weight:520;letter-spacing:.04em;color:rgba(235,235,245,.42);opacity:0;animation:wordIn .7s var(--ease-ios) .5s forwards}
 @keyframes spinSplash{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes pulseGlow{0%,100%{opacity:.65;transform:scale(1)}50%{opacity:1;transform:scale(1.1)}}
+@keyframes coreFloat{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-4px) scale(1.03)}}
+@keyframes starTwinkle{0%,100%{transform:scale(1) rotate(0deg);opacity:1}50%{transform:scale(1.12) rotate(6deg);opacity:.88}}
+@keyframes wordIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 .obslide{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 34px 150px;opacity:0;transform:translateX(40px);transition:all .55s var(--ease-ios);pointer-events:none}
 .obslide.on{opacity:1;transform:none;pointer-events:auto}
 .aurora{position:absolute;border-radius:50%;filter:blur(60px);opacity:.5;animation:float 9s ease-in-out infinite}
@@ -356,9 +369,16 @@ mark{background:rgba(255,206,92,.32);color:inherit;border-radius:3px;padding:1px
       <div id="sheetwrap"><div id="scrim"></div><div id="sheet"><div class="grabber"></div><div id="sheetbody"></div></div></div>
       <div id="toast"></div>
       <div id="splash">
-        <div class="splash-ring" style="width:190px;height:190px"></div>
-        <div class="splash-ring" style="width:240px;height:240px;animation-direction:reverse;opacity:.7"></div>
-        <div class="splash-core">🧭</div>
+        <div class="splash-sky" id="splashSky"></div>
+        <div class="splash-orbit"></div>
+        <div class="splash-glow"></div>
+        <div class="splash-core">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 1.5c.6 4.6 2 7.3 4.2 9.3 2.1 2 4.8 3.2 7.3 3.7-2.5.5-5.2 1.7-7.3 3.7-2.2 2-3.6 4.7-4.2 9.3-.6-4.6-2-7.3-4.2-9.3-2.1-2-4.8-3.2-7.3-3.7 2.5-.5 5.2-1.7 7.3-3.7 2.2-2 3.6-4.7 4.2-9.3Z" fill="#fff"/>
+          </svg>
+        </div>
+        <div class="splash-word">NORTH STAR</div>
+        <div class="splash-tag">Your films &amp; your story</div>
       </div>
       <div id="onb"></div>
     </div>
@@ -1271,7 +1291,7 @@ SCREENS.film=el=>{
 };
 function posterCard(m,w=124){
   const saved=S.movies[m.id];
-  return `<button class="pressable" data-mid="${m.id}" data-m='${esc(JSON.stringify({id:m.id,title:m.title,poster_path:m.poster_path,backdrop_path:m.backdrop_path,release_date:m.release_date,vote_average:m.vote_average,genre_ids:m.genre_ids||[]}))}' style="width:${w}px;text-align:left">
+  return `<button class="pressable" data-mid="${m.id}" data-m='${esc(JSON.stringify({id:m.id,title:m.title,poster_path:m.poster_path,backdrop_path:m.backdrop_path,release_date:m.release_date,vote_average:m.vote_average,genre_ids:m.genre_ids||[]}))}' style="width:${w}px;text-align:left;min-width:0;display:block">
     <div class="poster" style="width:${w}px;height:${Math.round(w*1.5)}px">
       ${m.poster_path?`<img loading="lazy" src="${IMG(m.poster_path,'w342')}" alt="">`:'<div class="ph">🎞️</div>'}
       ${saved?.watched?'<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.6);border-radius:7px;padding:2px 6px;font-size:10px;color:#43E0B0;font-weight:700">✓</div>':''}
@@ -1305,8 +1325,8 @@ function openMovieSearch(){
   });
 }
 function openList(title,path,params={}){
-  pushPage(title,`<div class="wrap" style="padding-top:10px"><div id="lgrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px"></div><div style="height:20px"></div></div>`,async p=>{
-    $('#lgrid',p).innerHTML=Array.from({length:9},()=>'<div class="poster" style="aspect-ratio:2/3"><div class="ph">🎞️</div></div>').join('');
+  pushPage(title,`<div class="wrap" style="padding-top:10px"><div id="lgrid" class="poster-grid"></div><div style="height:20px"></div></div>`,async p=>{
+    $('#lgrid',p).innerHTML=Array.from({length:9},()=>'<div class="poster" style="aspect-ratio:2/3;min-width:0"><div class="ph">🎞️</div></div>').join('');
     try{const d=await tmdb(path,params);
       $('#lgrid',p).innerHTML=(d.results||[]).map(m=>posterCard(m,104).replace(/width:104px/g,'width:100%').replace(/height:156px/,'aspect-ratio:2/3;height:auto')).join('');
       bindPosters($('#lgrid',p));
@@ -1357,7 +1377,7 @@ function openGenreMovies(id){
   const genre=S.genres.find(g=>g.id===id);if(!genre)return;
   const list=Object.values(S.movies).filter(m=>m.userGenres?.includes(id));
   pushPage(genre.name,`<div class="wrap" style="padding-top:10px">
-    ${list.length?`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">${list.map(m=>localPoster(m)).join('')}</div>`:
+    ${list.length?`<div class="poster-grid">${list.map(m=>localPoster(m)).join('')}</div>`:
     `<div class="card" style="padding:24px;text-align:center"><div style="font-size:28px">🎭</div><div class="sub" style="margin-top:8px">No films in this genre yet.</div></div>`}
     <div style="height:20px"></div></div>`,p=>{
     $$('[data-lm]',p).forEach(b=>b.onclick=()=>openMovie({id:+b.dataset.lm,title:S.movies[b.dataset.lm].title,poster_path:S.movies[b.dataset.lm].poster}));
@@ -1367,14 +1387,14 @@ function openLibraryList(kind){
   const titles={watchlist:'Watchlist',watched:'Watched'};
   const list=Object.values(S.movies).filter(m=>m[kind]);
   pushPage(titles[kind],`<div class="wrap" style="padding-top:10px">
-    ${list.length?`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">${list.map(m=>localPoster(m)).join('')}</div>`
+    ${list.length?`<div class="poster-grid">${list.map(m=>localPoster(m)).join('')}</div>`
     :`<div class="card" style="padding:26px;text-align:center"><div style="font-size:28px">🍿</div><div class="sub" style="margin-top:9px">Nothing here yet. Search for a film and add it.</div></div>`}
     <div style="height:20px"></div></div>`,p=>{
     $$('[data-lm]',p).forEach(b=>b.onclick=()=>openMovie({id:+b.dataset.lm,title:S.movies[b.dataset.lm].title,poster_path:S.movies[b.dataset.lm].poster}));
   });
 }
 function localPoster(m){
-  return `<button class="pressable" data-lm="${m.id}" style="text-align:left;width:100%">
+  return `<button class="pressable" data-lm="${m.id}" style="text-align:left;width:100%;min-width:0;display:block">
     <div class="poster" style="width:100%;aspect-ratio:2/3">${m.poster?`<img loading="lazy" src="${IMG(m.poster,'w342')}">`:'<div class="ph">🎞️</div>'}</div>
     <div style="font-size:12px;font-weight:600;margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(m.title)}</div>
     <div class="tiny">${m.rating?'★'.repeat(Math.round(m.rating/2)):m.year||''}</div></button>`;
@@ -2062,7 +2082,17 @@ function initPTR(){
       setTimeout(()=>{$('#ptr').style.opacity='0';SCREENS[cur]($(`#scr-${cur}`));attachScroll($(`#scr-${cur}`),TITLES[cur]);island('Refreshed');},700);}
     else $('#ptr').style.opacity='0';});
 }
+function paintSplashSky(){
+  const sky=$('#splashSky');if(!sky)return;
+  let html='';
+  for(let i=0;i<22;i++){
+    const s=1+Math.random()*2;
+    html+=`<div class="star" style="width:${s}px;height:${s}px;top:${Math.random()*100}%;left:${Math.random()*100}%;animation-delay:${(Math.random()*3).toFixed(2)}s;opacity:${(.2+Math.random()*.5).toFixed(2)}"></div>`;
+  }
+  sky.innerHTML=html;
+}
 function boot(){
+  paintSplashSky();
   $('#screens').innerHTML=TABS.map(t=>`<div class="screen tabview" id="scr-${t.id}"></div>`).join('');
   renderTabs();initPTR();
   if(!S.onboarded){S.onboarded=true;save(true);}
@@ -2077,7 +2107,7 @@ function boot(){
     window.matchMedia('(prefers-color-scheme: light)').addEventListener('change',()=>{if(S.theme==='system')applyTheme();});
     document.addEventListener('keydown',e=>{if(e.key==='Escape'){if($('#sheetwrap').classList.contains('open'))closeSheet();else if(pageStack.length)popPage();}});
   };
-  setTimeout(finishBoot,750);
+  setTimeout(finishBoot,1250);
 }
 boot();
 </script>
