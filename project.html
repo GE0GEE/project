@@ -385,12 +385,10 @@ mark{background:rgba(255,206,92,.32);color:inherit;border-radius:3px;padding:1px
     <div id="homebar"></div>
   </div>
 </div>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>
 /* ══════════════════════════════════════════════════════════
    NORTH STAR — state, storage, helpers
    ══════════════════════════════════════════════════════════ */
-if(window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 const LS='northstar.v1';
 const STORAGE_VERSION='northstar.v2';
 const todayKey=(d=new Date())=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -421,8 +419,14 @@ const DEFAULT={
   measures:[],
   photos:[],
   movies:{},          // id -> {id,title,poster,year,rating,watchlist,watched,dateWatched,review,notes,tags[],rewatch,userGenres[],genres[]}
+  shows:{},           // id -> same shape as movies, for TV shows
   genres:[],          // user-defined genre list: {id,name,emoji,color}
   collections:[{id:uid(),name:'Rewatch Forever',emoji:'♾️',ids:[]}],
+  mcu:{},             // MCU chronological watchlist: slug -> true/false
+  mcuPosters:{},      // slug -> {id,poster} cached from TMDb
+  mcuExtra:[],        // newly discovered MCU releases not yet in the curated list: {title,year,id,poster}
+  mcuCustom:[],        // manually added MCU movies: {slug,title,year,phase,poster,afterSlug}
+  mcuMeta:{lastSync:''},
   books:[],
   pdfs:[],
   substack:{subs:[{id:uid(),name:'The Marginalian',handle:'themarginalian',emoji:'🌿'},{id:uid(),name:'Farnam Street',handle:'fs',emoji:'🧠'}],read:[],bookmarks:[]},
@@ -443,8 +447,14 @@ function load(){
 }
 function deepMerge(t,s){for(const k in s){if(s[k]&&typeof s[k]==='object'&&!Array.isArray(s[k])&&t[k]&&typeof t[k]==='object'&&!Array.isArray(t[k]))deepMerge(t[k],s[k]);else t[k]=s[k];}return t;}
 let saveT;
-function saveNow(){try{localStorage.setItem(STORAGE_VERSION,JSON.stringify(S));localStorage.setItem(LS,JSON.stringify(S));return true;}catch(e){console.warn('Storage write failed',e);return false;}}
-function save(silent){clearTimeout(saveT);saveT=setTimeout(saveNow,120);if(!silent)island('Saved to device');}
+function save(silent){clearTimeout(saveT);saveT=setTimeout(()=>{
+  try{
+    localStorage.setItem(STORAGE_VERSION,JSON.stringify(S));
+    localStorage.setItem(LS,JSON.stringify(S));
+  }catch(e){
+    console.warn('Storage write failed',e);
+  }
+},120);if(!silent)island('Saved to device');}
 /* ─── haptics-ish + toast + dynamic island ─── */
 function haptic(){if(navigator.vibrate)navigator.vibrate(9);}
 let toastT;
@@ -601,6 +611,8 @@ const IMG=(p,s='w342')=>{
   if(!p || !navigator.onLine) return svgPlaceholder('🎞️');
   return `https://image.tmdb.org/t/p/${s}${p}`;
 };
+/* Fallback for posters/images that fail to load (broken TMDb path, network hiccup, etc.) */
+function imgFallback(el,label){el.onerror=null;el.src=svgPlaceholder(label||'🎞️');}
 function normalizeTmdbAuth(raw=''){
   const v=String(raw||'').trim();
   if(!v) return null;
@@ -623,12 +635,196 @@ async function tmdb(path,params={}){
 }
 const GENRES=[['Romance',10749],['Comedy',35],['Drama',18],['Action',28],['Adventure',12],['Sci-Fi',878],['Fantasy',14],['Animation',16],['Thriller',53],['Mystery',9648],['Crime',80],['Documentary',99],['Anime',16],['Family',10751],['Music',10402],['History',36],['War',10752],['Western',37]];
 const GMAP={28:'Action',12:'Adventure',16:'Animation',35:'Comedy',80:'Crime',99:'Documentary',18:'Drama',10751:'Family',14:'Fantasy',36:'History',27:'Horror',10402:'Music',9648:'Mystery',10749:'Romance',878:'Sci-Fi',10770:'TV Movie',53:'Thriller',10752:'War',37:'Western'};
+const TGMAP={10759:'Action & Adventure',16:'Animation',35:'Comedy',80:'Crime',99:'Documentary',18:'Drama',10751:'Family',10762:'Kids',9648:'Mystery',10763:'News',10764:'Reality',10765:'Sci-Fi & Fantasy',10766:'Soap',10767:'Talk',10768:'War & Politics',37:'Western'};
 function mv(id){return S.movies[id];}
-function ensureMv(m){
-  if(!S.movies[m.id])S.movies[m.id]={id:m.id,title:m.title,poster:m.poster_path||m.poster||'',backdrop:m.backdrop_path||'',
-    year:(m.release_date||'').slice(0,4),tmdbRating:m.vote_average||0,genres:(m.genre_ids||[]).map(g=>GMAP[g]).filter(Boolean),
+function store(mt){return mt==='tv'?S.shows:S.movies;}
+function ensureItem(m,mt='movie'){
+  const s=store(mt);
+  if(!s[m.id])s[m.id]={id:m.id,mt,title:m.title||m.name,poster:m.poster_path||m.poster||'',backdrop:m.backdrop_path||'',
+    year:(m.release_date||m.first_air_date||'').slice(0,4),tmdbRating:m.vote_average||0,
+    genres:(m.genre_ids||[]).map(g=>(mt==='tv'?TGMAP:GMAP)[g]).filter(Boolean),
     rating:0,watchlist:false,watched:false,dateWatched:'',review:'',notes:'',tags:[],rewatch:0,userGenres:[]};
-  return S.movies[m.id];
+  return s[m.id];
+}
+function ensureMv(m){return ensureItem(m,'movie');}
+/* ─────────── MCU CHRONOLOGICAL ORDER ─────────── */
+const MCU_ORDER=[
+ ['Captain America: The First Avenger','2011','Phase 1'],
+ ['Captain Marvel','2019','Phase 3'],
+ ['Iron Man','2008','Phase 1'],
+ ['Iron Man 2','2010','Phase 1'],
+ ['The Incredible Hulk','2008','Phase 1'],
+ ['Thor','2011','Phase 1'],
+ ['The Avengers','2012','Phase 1'],
+ ['Thor: The Dark World','2013','Phase 2'],
+ ['Iron Man 3','2013','Phase 2'],
+ ['Guardians of the Galaxy','2014','Phase 2'],
+ ['Guardians of the Galaxy Vol. 2','2017','Phase 2'],
+ ['Avengers: Age of Ultron','2015','Phase 2'],
+ ['Ant-Man','2015','Phase 2'],
+ ['Captain America: Civil War','2016','Phase 3'],
+ ['Black Widow','2021','Phase 4'],
+ ['Black Panther','2018','Phase 3'],
+ ['Spider-Man: Homecoming','2017','Phase 3'],
+ ['Doctor Strange','2016','Phase 3'],
+ ['Thor: Ragnarok','2017','Phase 3'],
+ ['Avengers: Infinity War','2018','Phase 3'],
+ ['Ant-Man and the Wasp','2018','Phase 3'],
+ ['Avengers: Endgame','2019','Phase 3'],
+ ['Spider-Man: Far From Home','2019','Phase 3'],
+ ['Shang-Chi and the Legend of the Ten Rings','2021','Phase 4'],
+ ['Eternals','2021','Phase 4'],
+ ['Spider-Man: No Way Home','2021','Phase 4'],
+ ['Doctor Strange in the Multiverse of Madness','2022','Phase 4'],
+ ['Thor: Love and Thunder','2022','Phase 4'],
+ ['Black Panther: Wakanda Forever','2022','Phase 4'],
+ ['Ant-Man and the Wasp: Quantumania','2023','Phase 5'],
+ ['Guardians of the Galaxy Vol. 3','2023','Phase 5'],
+ ['The Marvels','2023','Phase 5'],
+ ['Deadpool & Wolverine','2024','Phase 5'],
+ ['Captain America: Brave New World','2025','Phase 5'],
+ ['Thunderbolts*','2025','Phase 5'],
+ ['The Fantastic Four: First Steps','2025','Phase 6'],
+ ['Spider-Man: Brand New Day','2026','Phase 6'],
+ ['Avengers: Doomsday','2026','Phase 6']
+];
+function mcuSlug(t){return t.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');}
+function mcuNorm(t){return (t||'').toLowerCase().replace(/^the\s+/,'').replace(/[^a-z0-9]/g,'');}
+const MARVEL_STUDIOS_ID=420;
+let mcuSyncing=false;
+async function syncMCU(force){
+  if(mcuSyncing||!S.tmdb.key||!S.tmdb.ok)return false;
+  const last=S.mcuMeta?.lastSync?new Date(S.mcuMeta.lastSync):null;
+  const stale=!last||(Date.now()-last.getTime())>30*24*60*60*1000;
+  if(!force&&!stale)return false;
+  mcuSyncing=true;
+  try{
+    let results=[];
+    for(let page=1;page<=2;page++){
+      const d=await tmdb('/discover/movie',{with_companies:MARVEL_STUDIOS_ID,sort_by:'primary_release_date.asc',page});
+      results=results.concat(d.results||[]);
+      if(page>=(d.total_pages||1))break;
+    }
+    results.forEach(r=>{
+      if(!r.title)return;
+      const norm=mcuNorm(r.title);
+      const idx=MCU_ORDER.findIndex(m=>mcuNorm(m[0])===norm);
+      if(idx>-1){S.mcuPosters[mcuSlug(MCU_ORDER[idx][0])]={id:r.id,poster:r.poster_path||''};}
+      else if(r.release_date){
+        if(!S.mcuExtra.some(e=>e.id===r.id||mcuNorm(e.title)===norm))
+          S.mcuExtra.push({title:r.title,year:r.release_date.slice(0,4),id:r.id,poster:r.poster_path||''});
+      }
+    });
+    S.mcuExtra.sort((a,b)=>(a.year||'').localeCompare(b.year||''));
+    S.mcuMeta={lastSync:new Date().toISOString()};
+    save(true);
+    return true;
+  }catch(e){return false;}
+  finally{mcuSyncing=false;}
+}
+function mcuFullList(){
+  let list=[
+    ...MCU_ORDER.map(m=>({title:m[0],year:m[1],phase:m[2],slug:mcuSlug(m[0]),poster:S.mcuPosters[mcuSlug(m[0])]?.poster||'',custom:false})),
+    ...S.mcuExtra.map(e=>({title:e.title,year:e.year,phase:'New Release',slug:mcuSlug(e.title),poster:e.poster||'',custom:false}))
+  ];
+  (S.mcuCustom||[]).forEach(c=>{
+    const item={title:c.title,year:c.year,phase:c.phase||'My Additions',slug:c.slug,poster:c.poster||'',custom:true};
+    let idx=c.afterSlug?list.findIndex(x=>x.slug===c.afterSlug):-1;
+    if(idx>-1)list.splice(idx+1,0,item);else list.push(item);
+  });
+  return list;
+}
+function openAddMCUMovie(p,draw){
+  const options=mcuFullList();
+  const html=`<div>
+    <div style="text-align:center;font-weight:740;font-size:18px;margin:6px 0 14px">Add Movie to Marvel Order</div>
+    <div class="sub" style="font-size:13px;text-align:center;margin-bottom:14px">Search TMDb for the poster, or enter the details yourself.</div>
+    <input class="inp" id="mcuTitle" placeholder="Movie title" autocomplete="off">
+    <div id="mcuSearchRes" style="margin-top:8px;display:flex;flex-direction:column;gap:6px;max-height:200px;overflow-y:auto"></div>
+    <div style="display:flex;gap:10px;margin-top:10px">
+      <input class="inp" id="mcuYear" placeholder="Year" style="flex:1" inputmode="numeric">
+      <input class="inp" id="mcuPhase" placeholder="Phase (optional)" style="flex:2">
+    </div>
+    <div class="eyebrow" style="margin:14px 0 8px">Insert after</div>
+    <select class="inp" id="mcuAfter" style="-webkit-appearance:none;appearance:none">
+      <option value="">— Start of list —</option>
+      ${options.map(o=>`<option value="${o.slug}">${esc(o.title)} (${o.year})</option>`).join('')}
+    </select>
+    <button class="btn primary" id="mcuAddSave" style="width:100%;margin-top:18px">Add Movie</button>
+  </div>`;
+  openSheet(html,b=>{
+    // default the "insert after" to the last item so new adds land at the end
+    if(options.length)$('#mcuAfter',b).value=options[options.length-1].slug;
+    let picked=null;
+    const titleInp=$('#mcuTitle',b),resBox=$('#mcuSearchRes',b);
+    let t;titleInp.oninput=()=>{
+      picked=null;clearTimeout(t);const q=titleInp.value.trim();
+      if(!q||!S.tmdb.key||!S.tmdb.ok){resBox.innerHTML='';return;}
+      t=setTimeout(async()=>{
+        try{const d=await tmdb('/search/movie',{query:q,include_adult:false});
+          const r=(d.results||[]).slice(0,5);
+          resBox.innerHTML=r.map(m=>`<button class="pressable" data-pick='${esc(JSON.stringify({title:m.title,year:(m.release_date||'').slice(0,4),poster:m.poster_path||''}))}' style="display:flex;gap:10px;align-items:center;text-align:left;padding:6px;border-radius:10px;background:var(--fill)">
+            <div class="poster" style="width:30px;height:45px;flex:0 0 auto;border-radius:5px">${m.poster_path?`<img src="${IMG(m.poster_path,'w92')}" style="width:100%;height:100%;object-fit:cover" onerror="imgFallback(this,'🦸')">`:'<div class="ph" style="height:100%;font-size:13px">🦸</div>'}</div>
+            <div style="flex:1;min-width:0"><div style="font-size:13.5px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(m.title)}</div><div class="tiny">${(m.release_date||'').slice(0,4)||'—'}</div></div></button>`).join('');
+          $$('[data-pick]',resBox).forEach(btn=>btn.onclick=()=>{
+            const d2=JSON.parse(btn.dataset.pick);picked=d2;
+            titleInp.value=d2.title;$('#mcuYear',b).value=d2.year;resBox.innerHTML='';
+          });
+        }catch(e){resBox.innerHTML='';}
+      },380);
+    };
+    $('#mcuAddSave',b).onclick=()=>{
+      const title=titleInp.value.trim();
+      if(!title)return toast('Enter a movie title');
+      const year=$('#mcuYear',b).value.trim();
+      const phase=$('#mcuPhase',b).value.trim()||'My Additions';
+      const afterSlug=$('#mcuAfter',b).value;
+      let slug=mcuSlug(title);
+      if(mcuFullList().some(x=>x.slug===slug))slug=slug+'-'+uid().slice(0,4);
+      S.mcuCustom.push({slug,title,year,phase,poster:picked?.poster||'',afterSlug});
+      save(true);closeSheet();toast('Added to Marvel Order');draw(p);
+    };
+  });
+}
+function openMCUOrder(){
+  const draw=p=>{
+    const list=mcuFullList();
+    const done=list.filter(m=>S.mcu[m.slug]).length;
+    const checked=S.mcuMeta?.lastSync?'Checked for new releases '+new Date(S.mcuMeta.lastSync).toLocaleDateString('en',{month:'short',day:'numeric'}):(S.tmdb.ok?'Checking for new releases…':'Connect TMDb to fetch posters & new releases');
+    $('#mcuprog',p).innerHTML=`<div class="card lg" style="padding:18px;background:linear-gradient(140deg,rgba(255,60,60,.16),rgba(176,124,255,.1))">
+      <div style="display:flex;justify-content:space-between;align-items:center"><div style="font-weight:740;font-size:16px">Your progress</div><div style="font-weight:800;font-size:16px">${done}/${list.length}</div></div>
+      <div class="pbar" style="margin-top:10px;height:6px"><i style="width:${Math.round(done/list.length*100)}%"></i></div>
+      <div class="tiny" style="margin-top:8px">${checked}</div></div>`;
+    let lastPhase='';
+    $('#mculist',p).innerHTML=list.map((m,i)=>{
+      const on=!!S.mcu[m.slug];
+      const hdr=m.phase!==lastPhase?(lastPhase=m.phase,`<div class="grouphdr" style="margin-top:${i?18:0}px">${esc(m.phase)}</div>`):'';
+      return `${hdr}<div class="card" style="width:100%;text-align:left;padding:10px 14px;display:flex;align-items:center;gap:12px;margin-top:${hdr?0:8}px">
+        <button class="pressable" data-mcu="${m.slug}" style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;text-align:left">
+        <div class="poster" style="width:38px;height:57px;flex:0 0 auto;border-radius:7px">${m.poster?`<img loading="lazy" src="${IMG(m.poster,'w92')}" style="width:100%;height:100%;object-fit:cover" onerror="imgFallback(this,'🦸')">`:'<div class="ph" style="font-size:15px;height:100%">🦸</div>'}</div>
+        <div style="width:22px;height:22px;border-radius:50%;flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;
+          background:${on?'#43E0B0':'var(--fill)'};color:${on?'#06251c':'var(--txt3)'}">${on?'✓':i+1}</div>
+        <div style="flex:1;min-width:0"><div style="font-weight:650;font-size:14.5px;${on?'opacity:.55;text-decoration:line-through':''}">${esc(m.title)}${m.custom?' <span class="tiny" style="color:var(--accent)">· added by you</span>':''}</div>
+        <div class="tiny">${m.year}</div></div></button>
+        ${m.custom?`<button data-mcudel="${m.slug}" class="pressable" style="flex:0 0 auto;color:var(--txt3);font-size:15px;padding:6px">✕</button>`:''}
+      </div>`;
+    }).join('');
+    $$('[data-mcu]',p).forEach(b=>b.onclick=()=>{haptic();const s=b.dataset.mcu;S.mcu[s]=!S.mcu[s];save(true);draw(p);});
+    $$('[data-mcudel]',p).forEach(b=>b.onclick=e=>{e.stopPropagation();const s=b.dataset.mcudel;S.mcuCustom=S.mcuCustom.filter(c=>c.slug!==s);delete S.mcu[s];save();draw(p);toast('Removed');});
+  };
+  pushPage('Marvel Order',`<div class="wrap" style="padding-top:10px">
+    <div class="sub" style="font-size:13px">The MCU in chronological (in-universe timeline) order — check off what you've watched. Checks TMDb monthly for new releases to add automatically.</div>
+    <button class="btn primary" id="mcuAddBtn" style="width:100%;margin-top:14px">+ Add Movie</button>
+    <div id="mcuprog" style="margin-top:14px"></div>
+    <div id="mculist" style="margin-top:18px"></div>
+    <div style="height:20px"></div></div>`,p=>{
+    draw(p);
+    $('#mcuAddBtn',p).onclick=()=>openAddMCUMovie(p,draw);
+    if(S.tmdb.key&&S.tmdb.ok){
+      const firstRun=!S.mcuMeta?.lastSync;
+      syncMCU(firstRun).then(changed=>{if(changed)draw(p);});
+    }
+  });
 }
 /* ══════════════════════════════════════════════════════════
    SCREEN BUILDERS
@@ -698,7 +894,7 @@ SCREENS.home=el=>{
         <span class="chev">›</span>
       </div>
       <div class="card pressable fadein" data-nav="film" style="animation-delay:.26s;padding:15px;display:flex;align-items:center;gap:13px">
-        ${lastMovie&&lastMovie.poster?`<div class="poster" style="width:36px;height:52px"><img src="${IMG(lastMovie.poster,'w154')}" alt=""></div>`:`<div style="width:36px;height:52px;border-radius:6px;background:linear-gradient(135deg,#6E8BFF,#B07CFF);display:flex;align-items:center;justify-content:center;font-size:17px">🎬</div>`}
+        ${lastMovie&&lastMovie.poster?`<div class="poster" style="width:36px;height:52px"><img src="${IMG(lastMovie.poster,'w154')}" alt="" onerror="imgFallback(this,'🎬')"></div>`:`<div style="width:36px;height:52px;border-radius:6px;background:linear-gradient(135deg,#6E8BFF,#B07CFF);display:flex;align-items:center;justify-content:center;font-size:17px">🎬</div>`}
         <div style="flex:1;min-width:0"><div style="font-weight:650;font-size:15.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${lastMovie?esc(lastMovie.title):'Last Movie Watched'}</div>
         <div class="sub" style="font-size:13px">${lastMovie?`${'★'.repeat(Math.round(lastMovie.rating/2))||'Not rated'} · ${lastMovie.dateWatched||lastMovie.year}`:'Log what you watched'}</div></div>
         <span class="chev">›</span>
@@ -1234,6 +1430,7 @@ function openJournalEditor(id){
   });
 }
 /* ─────────── FILM ─────────── */
+let filmMT='movie';
 SCREENS.film=el=>{
   if(!S.tmdb.key||!S.tmdb.ok){
     el.innerHTML=`<div class="wrap" style="padding-top:6px"><h1 class="large">Film</h1>
@@ -1248,18 +1445,25 @@ SCREENS.film=el=>{
       <div class="grid2">
         <button class="card pressable" data-off="genres" style="padding:16px;text-align:left"><div style="font-size:21px">🎭</div><div style="font-weight:660;margin-top:6px;font-size:15px">My Genres</div><div class="tiny">Custom film categories</div></button>
         <button class="card pressable" data-off="stats" style="padding:16px;text-align:left"><div style="font-size:21px">📊</div><div style="font-weight:660;margin-top:6px;font-size:15px">Statistics</div><div class="tiny">Your history</div></button>
+        <button class="card pressable" data-off="mcu" style="padding:16px;text-align:left;grid-column:1/-1"><div style="font-size:21px">🦸</div><div style="font-weight:660;margin-top:6px;font-size:15px">Marvel Order</div><div class="tiny">MCU chronological checklist</div></button>
       </div></div>`;
     $('#gokey',el).onclick=openTMDbSettings;
-    $$('[data-off]',el).forEach(b=>b.onclick=()=>b.dataset.off==='genres'?openMyGenres():openFilmStats());
+    $$('[data-off]',el).forEach(b=>b.onclick=()=>{const k=b.dataset.off;if(k==='genres')openMyGenres();else if(k==='mcu')openMCUOrder();else openFilmStats();});
     return;
   }
-  const lib=Object.values(S.movies);
+  const mt=filmMT;
+  const lib=Object.values(store(mt));
+  const label=mt==='tv'?'shows':'movies';
   el.innerHTML=`<div class="wrap" style="padding-top:6px">
       <h1 class="large">Film</h1>
-      <button class="pressable" id="searchbar" style="width:100%;margin-top:14px;background:var(--fill);border-radius:12px;padding:11px 13px;display:flex;gap:9px;align-items:center;color:var(--txt3);font-size:16px">🔎 Search movies</button>
+      <div style="display:flex;gap:6px;margin-top:14px;background:var(--fill);border-radius:12px;padding:4px" id="mtSeg">
+        <button class="pressable" data-mt="movie" style="flex:1;padding:9px;border-radius:9px;font-weight:650;font-size:14px;background:${mt==='movie'?'var(--card-solid)':'transparent'};box-shadow:${mt==='movie'?'0 4px 10px rgba(0,0,0,.25)':'none'}">🎬 Movies</button>
+        <button class="pressable" data-mt="tv" style="flex:1;padding:9px;border-radius:9px;font-weight:650;font-size:14px;background:${mt==='tv'?'var(--card-solid)':'transparent'};box-shadow:${mt==='tv'?'0 4px 10px rgba(0,0,0,.25)':'none'}">📺 Shows</button>
+      </div>
+      <button class="pressable" id="searchbar" style="width:100%;margin-top:12px;background:var(--fill);border-radius:12px;padding:11px 13px;display:flex;gap:9px;align-items:center;color:var(--txt3);font-size:16px">🔎 Search ${label}</button>
     </div>
     <div class="chiprow" style="margin-top:14px" id="filmnav">
-      ${[['Watchlist','watchlist'],['Watched','watched'],['My Genres','mygenres'],['Stats','stats']].map(c=>`<button class="chip" data-f="${c[1]}">${c[0]}</button>`).join('')}
+      ${[['Watchlist','watchlist'],['Watched','watched'],['My Genres','mygenres'],['Marvel Order','mcu'],['Stats','stats']].map(c=>`<button class="chip" data-f="${c[1]}">${c[0]}</button>`).join('')}
     </div>
     <div class="wrap" style="margin-top:18px">
       <div class="grid4">
@@ -1269,10 +1473,13 @@ SCREENS.film=el=>{
     </div>
     <div id="filmrows"></div>
     <div style="height:20px"></div>`;
-  $('#searchbar',el).onclick=openMovieSearch;
+  $$('#mtSeg [data-mt]',el).forEach(b=>b.onclick=()=>{if(b.dataset.mt===filmMT)return;haptic();filmMT=b.dataset.mt;SCREENS.film(el);});
+  $('#searchbar',el).onclick=()=>openMediaSearch(mt);
   $$('#filmnav .chip',el).forEach(c=>c.onclick=()=>{haptic();const f=c.dataset.f;
-    if(f==='stats')openFilmStats();else if(f==='mygenres')openMyGenres();else openLibraryList(f);});
-  const rows=[['trending','Trending','/trending/movie/week'],['popular','Popular','/movie/popular'],['now_playing','Now Playing','/movie/now_playing'],['top_rated','Top Rated','/movie/top_rated'],['upcoming','Upcoming','/movie/upcoming']];
+    if(f==='stats')openFilmStats();else if(f==='mygenres')openMyGenres();else if(f==='mcu')openMCUOrder();else openLibraryList(f,mt);});
+  const rows=mt==='tv'
+    ?[['trending','Trending','/trending/tv/week'],['popular','Popular','/tv/popular'],['on_the_air','On The Air','/tv/on_the_air'],['top_rated','Top Rated','/tv/top_rated'],['airing_today','Airing Today','/tv/airing_today']]
+    :[['trending','Trending','/trending/movie/week'],['popular','Popular','/movie/popular'],['now_playing','Now Playing','/movie/now_playing'],['top_rated','Top Rated','/movie/top_rated'],['upcoming','Upcoming','/movie/upcoming']];
   const c=$('#filmrows',el);
   c.innerHTML=rows.map(r=>`<div style="margin-top:24px">
     <div class="wrap"><div class="sec-title">${r[1]} <span class="more" data-all="${r[0]}">See all ›</span></div></div>
@@ -1280,25 +1487,28 @@ SCREENS.film=el=>{
   rows.forEach(async r=>{
     try{const d=await tmdb(r[2]);const items=(d.results||[]).slice(0,16);
       const rc=$('#row-'+r[0],el);if(!rc)return;
-      rc.innerHTML=items.map(m=>posterCard(m)).join('');bindPosters(rc);
+      rc.innerHTML=items.map(m=>posterCard(m,mt)).join('');bindPosters(rc);
     }catch(e){const rc=$('#row-'+r[0],el);if(rc)rc.innerHTML=`<div class="wrap sub" style="font-size:13px">Couldn't load ${r[1]}.</div>`;}
   });
-  $$('[data-all]',c).forEach(b=>b.onclick=()=>openList(b.textContent,rows.find(r=>r[0]===b.dataset.all)[2]));
+  $$('[data-all]',c).forEach(b=>b.onclick=()=>openList(b.textContent,rows.find(r=>r[0]===b.dataset.all)[2],{},mt));
 };
-function posterCard(m,w=124){
-  const saved=S.movies[m.id];
-  return `<button class="pressable" data-mid="${m.id}" data-m='${esc(JSON.stringify({id:m.id,title:m.title,poster_path:m.poster_path,backdrop_path:m.backdrop_path,release_date:m.release_date,vote_average:m.vote_average,genre_ids:m.genre_ids||[]}))}' style="width:${w}px;text-align:left;min-width:0;display:block">
+function posterCard(m,mt='movie',w=124){
+  const saved=store(mt)[m.id];
+  const title=m.title||m.name||'';
+  const date=m.release_date||m.first_air_date||'';
+  return `<button class="pressable" data-mid="${m.id}" data-mt="${mt}" data-m='${esc(JSON.stringify({id:m.id,title:m.title,name:m.name,poster_path:m.poster_path,backdrop_path:m.backdrop_path,release_date:m.release_date,first_air_date:m.first_air_date,vote_average:m.vote_average,genre_ids:m.genre_ids||[]}))}' style="width:${w}px;text-align:left;min-width:0;display:block">
     <div class="poster" style="width:${w}px;height:${Math.round(w*1.5)}px">
-      ${m.poster_path?`<img loading="lazy" src="${IMG(m.poster_path,'w342')}" alt="">`:'<div class="ph">🎞️</div>'}
+      ${m.poster_path?`<img loading="lazy" src="${IMG(m.poster_path,'w342')}" alt="" onerror="imgFallback(this,'🎞️')">`:'<div class="ph">🎞️</div>'}
       ${saved?.watched?'<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.6);border-radius:7px;padding:2px 6px;font-size:10px;color:#43E0B0;font-weight:700">✓</div>':''}
     </div>
-    <div style="font-size:12.5px;font-weight:600;margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(m.title||'')}</div>
-    <div class="tiny">${(m.release_date||'').slice(0,4)}${m.vote_average?' · ★ '+m.vote_average.toFixed(1):''}</div></button>`;
+    <div style="font-size:12.5px;font-weight:600;margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(title)}</div>
+    <div class="tiny">${date.slice(0,4)}${m.vote_average?' · ★ '+m.vote_average.toFixed(1):''}</div></button>`;
 }
-function bindPosters(root){$$('[data-mid]',root).forEach(b=>b.onclick=()=>{haptic();openMovie(JSON.parse(b.dataset.m));});}
-function openMovieSearch(){
+function bindPosters(root){$$('[data-mid]',root).forEach(b=>b.onclick=()=>{haptic();openItem(JSON.parse(b.dataset.m),b.dataset.mt||'movie');});}
+function openMediaSearch(mt='movie'){
+  const label=mt==='tv'?'shows':'movies';
   const html=`<div class="wrap" style="padding-top:10px">
-    <input class="inp" id="msq" placeholder="🔎 Search movies…" autocomplete="off">
+    <input class="inp" id="msq" placeholder="🔎 Search ${label}…" autocomplete="off">
     <div id="mres" style="margin-top:16px"></div></div>`;
   pushPage('Search',html,p=>{
     const inp=$('#msq',p);setTimeout(()=>inp.focus(),420);
@@ -1306,122 +1516,191 @@ function openMovieSearch(){
       if(!q){$('#mres',p).innerHTML='';return;}
       $('#mres',p).innerHTML='<div style="display:flex;justify-content:center;padding:24px"><div class="spin"></div></div>';
       t=setTimeout(async()=>{
-        try{const d=await tmdb('/search/movie',{query:q,include_adult:false});
+        try{const d=await tmdb(mt==='tv'?'/search/tv':'/search/movie',{query:q,include_adult:false});
           const r=(d.results||[]).filter(m=>m.poster_path||m.overview);
-          $('#mres',p).innerHTML=r.length?r.map(m=>`<button class="pressable" data-mid="${m.id}" data-m='${esc(JSON.stringify({id:m.id,title:m.title,poster_path:m.poster_path,backdrop_path:m.backdrop_path,release_date:m.release_date,vote_average:m.vote_average,genre_ids:m.genre_ids||[]}))}' style="width:100%;display:flex;gap:12px;padding:10px 0;text-align:left;border-bottom:.5px solid var(--sep)">
-            <div class="poster" style="width:62px;height:93px;flex:0 0 auto">${m.poster_path?`<img loading="lazy" src="${IMG(m.poster_path,'w185')}">`:'<div class="ph">🎞️</div>'}</div>
+          $('#mres',p).innerHTML=r.length?r.map(m=>{
+            const title=m.title||m.name||'';const date=m.release_date||m.first_air_date||'';
+            return `<button class="pressable" data-mid="${m.id}" data-mt="${mt}" data-m='${esc(JSON.stringify({id:m.id,title:m.title,name:m.name,poster_path:m.poster_path,backdrop_path:m.backdrop_path,release_date:m.release_date,first_air_date:m.first_air_date,vote_average:m.vote_average,genre_ids:m.genre_ids||[]}))}' style="width:100%;display:flex;gap:12px;padding:10px 0;text-align:left;border-bottom:.5px solid var(--sep)">
+            <div class="poster" style="width:62px;height:93px;flex:0 0 auto">${m.poster_path?`<img loading="lazy" src="${IMG(m.poster_path,'w185')}" onerror="imgFallback(this,'🎞️')">`:'<div class="ph">🎞️</div>'}</div>
             <div style="flex:1;min-width:0;padding-top:2px">
-              <div style="font-weight:650;font-size:15px;line-height:1.25">${esc(m.title)}</div>
-              <div class="tiny" style="margin-top:3px">${(m.release_date||'').slice(0,4)||'—'} · ★ ${(m.vote_average||0).toFixed(1)} · ${(m.genre_ids||[]).map(g=>GMAP[g]).filter(Boolean).slice(0,2).join(', ')||'—'}</div>
+              <div style="font-weight:650;font-size:15px;line-height:1.25">${esc(title)}</div>
+              <div class="tiny" style="margin-top:3px">${date.slice(0,4)||'—'} · ★ ${(m.vote_average||0).toFixed(1)} · ${(m.genre_ids||[]).map(g=>(mt==='tv'?TGMAP:GMAP)[g]).filter(Boolean).slice(0,2).join(', ')||'—'}</div>
               <div class="sub" style="font-size:12.5px;margin-top:5px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden">${esc(m.overview||'No overview.')}</div>
-            </div></button>`).join(''):'<div class="sub" style="text-align:center;padding:24px">No results.</div>';
+            </div></button>`;
+          }).join(''):'<div class="sub" style="text-align:center;padding:24px">No results.</div>';
           bindPosters($('#mres',p));
         }catch(e){$('#mres',p).innerHTML='<div class="sub" style="text-align:center;padding:24px">Search failed. Check your API key in Settings.</div>';}
       },380);};
   });
 }
-function openList(title,path,params={}){
+function openMovieSearch(){openMediaSearch('movie');}
+function openList(title,path,params={},mt='movie'){
   pushPage(title,`<div class="wrap" style="padding-top:10px"><div id="lgrid" class="poster-grid"></div><div style="height:20px"></div></div>`,async p=>{
     $('#lgrid',p).innerHTML=Array.from({length:9},()=>'<div class="poster" style="aspect-ratio:2/3;min-width:0"><div class="ph">🎞️</div></div>').join('');
     try{const d=await tmdb(path,params);
-      $('#lgrid',p).innerHTML=(d.results||[]).map(m=>posterCard(m,104).replace(/width:104px/g,'width:100%').replace(/height:156px/,'aspect-ratio:2/3;height:auto')).join('');
+      $('#lgrid',p).innerHTML=(d.results||[]).map(m=>posterCard(m,mt,104).replace(/width:104px/g,'width:100%').replace(/height:156px/,'aspect-ratio:2/3;height:auto')).join('');
       bindPosters($('#lgrid',p));
     }catch(e){$('#lgrid',p).innerHTML='<div class="sub">Failed to load.</div>';}
   });
+}
+function openAddGenreSheet(onSaved){
+  openSheet(`<div><div style="text-align:center;font-weight:740;font-size:18px;margin:6px 0 14px">New Category</div>
+    <input class="inp" id="gname" placeholder="Category name"><div class="eyebrow" style="margin:14px 0 8px">Emoji</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px" id="gemojis">${['🎭','🎞️','🌙','💥','🧠','❤️','🪩','🌿','☕','🔥'].map((e,i)=>`<button class="chip${i?'':' on'}" data-e="${e}" style="font-size:18px">${e}</button>`).join('')}</div>
+    <input class="inp" id="gcustomemoji" placeholder="Or type your own emoji" style="margin-top:10px">
+    <div class="eyebrow" style="margin:14px 0 8px">Color</div>
+    <input class="inp" id="gcolor" type="color" value="#6E8BFF">
+    <button class="btn primary" id="gsave" style="width:100%;margin-top:18px">Create Category</button></div>`,b=>{
+    let em='🎭';let color='#6E8BFF';$$('[data-e]',b).forEach(x=>x.onclick=()=>{em=x.dataset.e;$$('[data-e]',b).forEach(y=>y.classList.remove('on'));x.classList.add('on');});
+    $('#gcustomemoji',b).oninput=e=>{const v=e.target.value.trim();if(v)em=v;};
+    $('#gcolor',b).oninput=e=>color=e.target.value;
+    $('#gsave',b).onclick=()=>{const n=$('#gname',b).value.trim();if(!n)return toast('Name your category first');const customEmoji=$('#gcustomemoji',b).value.trim();S.genres.push({id:uid(),name:n,emoji:customEmoji||em,color});save();closeSheet();toast('Category created');onSaved&&onSaved();};});
 }
 function openMyGenres(){
   const html=`<div class="wrap" style="padding-top:10px">
     <div class="card" style="padding:16px 16px 14px">
       <div style="font-weight:740;font-size:17px">Your genres</div>
-      <div class="sub" style="margin-top:6px;font-size:13px">Create your own film categories and assign them to any movie.</div>
+      <div class="sub" style="margin-top:6px;font-size:13px">Create your own categories and assign them to any movie or show.</div>
       <button class="btn primary" id="addgenre" style="width:100%;margin-top:14px">+ Add Genre</button>
     </div>
+    <button class="card pressable" id="allgenres" style="width:100%;margin-top:14px;padding:14px 14px;text-align:left;display:flex;align-items:center;gap:10px">
+      <span style="font-size:19px">🎞️</span>
+      <div style="flex:1"><div style="font-weight:700;font-size:15px">All Genres</div><div class="tiny">Browse Horror, Comedy, Romance & more — or add your own</div></div>
+      <span style="color:var(--txt3)">›</span>
+    </button>
     <div id="genrelist" style="display:flex;flex-direction:column;gap:10px;margin-top:14px"></div>
     <div style="height:20px"></div></div>`;
   pushPage('My Genres',html,p=>{
     const draw=()=>{
       $('#genrelist',p).innerHTML=S.genres.length?S.genres.map(g=>{
-        const count=Object.values(S.movies).filter(m=>m.userGenres?.includes(g.id)).length;
+        const count=Object.values(S.movies).filter(m=>m.userGenres?.includes(g.id)).length+Object.values(S.shows).filter(m=>m.userGenres?.includes(g.id)).length;
         return `<div class="card pressable" data-gid="${g.id}" style="padding:14px 14px 12px;text-align:left;border:${g.color?`1.2px solid ${g.color}`:'1.2px solid var(--stroke)'}">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
             <div style="display:flex;align-items:center;gap:8px"><span style="font-size:18px">${esc(g.emoji||'🎭')}</span><div style="font-weight:700;font-size:15px">${esc(g.name)}</div></div>
             <div style="display:flex;align-items:center;gap:8px">
-              <div class="tiny">${count} movies</div>
+              <div class="tiny">${count} titles</div>
               <button class="btn ghost sm" data-delgenre="${g.id}" style="padding:6px 8px">Delete</button>
             </div>
           </div>
         </div>`;
       }).join():'<div class="card" style="padding:22px;text-align:center"><div style="font-size:24px">🎭</div><div class="sub" style="margin-top:8px">No custom genres yet — create one to start organizing films.</div></div>';
       $$('[data-gid]',p).forEach(b=>b.onclick=()=>openGenreMovies(b.dataset.gid));
-      $$('[data-delgenre]',p).forEach(btn=>btn.onclick=e=>{e.stopPropagation();const id=btn.dataset.delgenre;S.genres=S.genres.filter(g=>g.id!==id);Object.values(S.movies).forEach(m=>{m.userGenres=m.userGenres?.filter(x=>x!==id)||[];});save();draw();toast('Genre deleted');});
+      $$('[data-delgenre]',p).forEach(btn=>btn.onclick=e=>{e.stopPropagation();const id=btn.dataset.delgenre;S.genres=S.genres.filter(g=>g.id!==id);Object.values(S.movies).forEach(m=>{m.userGenres=m.userGenres?.filter(x=>x!==id)||[];});Object.values(S.shows).forEach(m=>{m.userGenres=m.userGenres?.filter(x=>x!==id)||[];});save();draw();toast('Genre deleted');});
     };
     draw();
-    $('#addgenre',p).onclick=()=>openSheet(`<div><div style="text-align:center;font-weight:740;font-size:18px;margin:6px 0 14px">New Genre</div>
-      <input class="inp" id="gname" placeholder="Genre name"><div class="eyebrow" style="margin:14px 0 8px">Emoji</div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px" id="gemojis">${['🎭','🎞️','🌙','💥','🧠','❤️','🪩','🌿','☕','🔥'].map((e,i)=>`<button class="chip${i?'':' on'}" data-e="${e}" style="font-size:18px">${e}</button>`).join('')}</div>
-      <input class="inp" id="gcustomemoji" placeholder="Or type your own emoji" style="margin-top:10px">
-      <div class="eyebrow" style="margin:14px 0 8px">Color</div>
-      <input class="inp" id="gcolor" type="color" value="#6E8BFF">
-      <button class="btn primary" id="gsave" style="width:100%;margin-top:18px">Create Genre</button></div>`,b=>{
-      let em='🎭';let color='#6E8BFF';$$('[data-e]',b).forEach(x=>x.onclick=()=>{em=x.dataset.e;$$('[data-e]',b).forEach(y=>y.classList.remove('on'));x.classList.add('on');});
-      $('#gcustomemoji',b).oninput=e=>{const v=e.target.value.trim();if(v)em=v;};
-      $('#gcolor',b).oninput=e=>color=e.target.value;
-      $('#gsave',b).onclick=()=>{const n=$('#gname',b).value.trim();if(!n)return toast('Name your genre first');const customEmoji=$('#gcustomemoji',b).value.trim();S.genres.push({id:uid(),name:n,emoji:customEmoji||em,color});save();closeSheet();draw();toast('Genre created');};});
+    $('#addgenre',p).onclick=()=>openAddGenreSheet(draw);
+    $('#allgenres',p).onclick=()=>openAllGenres();
+  });
+}
+/* ─────────── ALL GENRES (standard TMDb genres + custom categories, all in one place) ─────────── */
+const GENRE_NAME_TO_ID=Object.fromEntries(Object.entries(GMAP).map(([id,name])=>[name,+id]));
+const STANDARD_GENRE_NAMES=[...new Set(Object.values(GMAP))].sort();
+function openStandardGenreMovies(name){
+  const gid=GENRE_NAME_TO_ID[name];
+  pushPage(name,`<div class="wrap" style="padding-top:10px"><div id="lgrid" class="poster-grid"></div><div style="height:20px"></div></div>`,async p=>{
+    const grid=$('#lgrid',p);
+    if(!S.tmdb.key||!S.tmdb.ok){
+      grid.outerHTML=`<div class="card" style="padding:24px;text-align:center"><div style="font-size:28px">🎞️</div><div class="sub" style="margin-top:8px">Connect TMDb in Settings to browse ${esc(name)} movies.</div></div>`;
+      return;
+    }
+    grid.innerHTML=Array.from({length:9},()=>'<div class="poster" style="aspect-ratio:2/3;min-width:0"><div class="ph">🎞️</div></div>').join('');
+    try{
+      const d=await tmdb('/discover/movie',{with_genres:gid,sort_by:'popularity.desc'});
+      const items=(d.results||[]);
+      grid.innerHTML=items.length?items.map(m=>posterCard(m,'movie',104).replace(/width:104px/g,'width:100%').replace(/height:156px/,'aspect-ratio:2/3;height:auto')).join(''):`<div class="sub" style="grid-column:1/-1;text-align:center;padding:24px">No ${esc(name)} movies found.</div>`;
+      bindPosters(grid);
+    }catch(e){grid.innerHTML=`<div class="sub" style="grid-column:1/-1;text-align:center;padding:24px">Couldn't load ${esc(name)} movies.</div>`;}
+  });
+}
+function openAllGenres(){
+  const html=`<div class="wrap" style="padding-top:10px">
+    <div class="sub" style="font-size:13px">Browse popular movies by genre, or create your own empty category and build it up yourself.</div>
+    <button class="btn primary" id="addcat" style="width:100%;margin-top:14px">+ Add Your Own Category</button>
+    <div class="grouphdr" style="margin-top:22px">Genres</div>
+    <div id="stdgenrelist" style="display:flex;flex-direction:column;gap:8px;margin-top:6px"></div>
+    <div class="grouphdr" style="margin-top:22px">Your Categories</div>
+    <div id="customgenrelist" style="display:flex;flex-direction:column;gap:8px;margin-top:6px"></div>
+    <div style="height:20px"></div></div>`;
+  pushPage('All Genres',html,p=>{
+    const draw=()=>{
+      $('#stdgenrelist',p).innerHTML=STANDARD_GENRE_NAMES.map(name=>{
+        return `<button class="card pressable" data-std="${esc(name)}" style="width:100%;text-align:left;padding:12px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px">
+          <div style="font-weight:650;font-size:14.5px">${esc(name)}</div><div class="tiny">Browse ›</div></button>`;
+      }).join('');
+      $('#customgenrelist',p).innerHTML=S.genres.length?S.genres.map(g=>{
+        const count=Object.values(S.movies).filter(m=>m.userGenres?.includes(g.id)).length+Object.values(S.shows).filter(m=>m.userGenres?.includes(g.id)).length;
+        return `<div class="card pressable" data-gid="${g.id}" style="padding:12px 14px;text-align:left;border:${g.color?`1.2px solid ${g.color}`:'1.2px solid var(--stroke)'}">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+            <div style="display:flex;align-items:center;gap:8px"><span style="font-size:16px">${esc(g.emoji||'🎭')}</span><div style="font-weight:650;font-size:14.5px">${esc(g.name)}</div></div>
+            <div style="display:flex;align-items:center;gap:8px"><div class="tiny">${count} titles</div><button class="btn ghost sm" data-delgenre="${g.id}" style="padding:6px 8px">Delete</button></div>
+          </div></div>`;
+      }).join():'<div class="card" style="padding:20px;text-align:center"><div class="sub" style="font-size:13px">No custom categories yet — add one above.</div></div>';
+      $$('[data-std]',p).forEach(b=>b.onclick=()=>openStandardGenreMovies(b.dataset.std));
+      $$('[data-gid]',p).forEach(b=>b.onclick=()=>openGenreMovies(b.dataset.gid));
+      $$('[data-delgenre]',p).forEach(btn=>btn.onclick=e=>{e.stopPropagation();const id=btn.dataset.delgenre;S.genres=S.genres.filter(g=>g.id!==id);Object.values(S.movies).forEach(m=>{m.userGenres=m.userGenres?.filter(x=>x!==id)||[];});Object.values(S.shows).forEach(m=>{m.userGenres=m.userGenres?.filter(x=>x!==id)||[];});save();draw();toast('Category deleted');});
+    };
+    draw();
+    $('#addcat',p).onclick=()=>openAddGenreSheet(draw);
   });
 }
 function openGenreMovies(id){
   const genre=S.genres.find(g=>g.id===id);if(!genre)return;
-  const list=Object.values(S.movies).filter(m=>m.userGenres?.includes(id));
+  const list=[...Object.values(S.movies).map(m=>({...m,mt:m.mt||'movie'})),...Object.values(S.shows).map(m=>({...m,mt:m.mt||'tv'}))].filter(m=>m.userGenres?.includes(id));
   pushPage(genre.name,`<div class="wrap" style="padding-top:10px">
     ${list.length?`<div class="poster-grid">${list.map(m=>localPoster(m)).join('')}</div>`:
     `<div class="card" style="padding:24px;text-align:center"><div style="font-size:28px">🎭</div><div class="sub" style="margin-top:8px">No films in this genre yet.</div></div>`}
     <div style="height:20px"></div></div>`,p=>{
-    $$('[data-lm]',p).forEach(b=>b.onclick=()=>openMovie({id:+b.dataset.lm,title:S.movies[b.dataset.lm].title,poster_path:S.movies[b.dataset.lm].poster}));
+    $$('[data-lm]',p).forEach(b=>b.onclick=()=>{const mt=b.dataset.mt||'movie';const rec=store(mt)[b.dataset.lm];openItem({id:+b.dataset.lm,title:rec.title,poster_path:rec.poster},mt);});
   });
 }
-function openLibraryList(kind){
+function openLibraryList(kind,mt='movie'){
   const titles={watchlist:'Watchlist',watched:'Watched'};
-  const list=Object.values(S.movies).filter(m=>m[kind]);
-  pushPage(titles[kind],`<div class="wrap" style="padding-top:10px">
+  const list=Object.values(store(mt)).filter(m=>m[kind]).map(m=>({...m,mt:m.mt||mt}));
+  pushPage(titles[kind]+(mt==='tv'?' · Shows':' · Movies'),`<div class="wrap" style="padding-top:10px">
     ${list.length?`<div class="poster-grid">${list.map(m=>localPoster(m)).join('')}</div>`
-    :`<div class="card" style="padding:26px;text-align:center"><div style="font-size:28px">🍿</div><div class="sub" style="margin-top:9px">Nothing here yet. Search for a film and add it.</div></div>`}
+    :`<div class="card" style="padding:26px;text-align:center"><div style="font-size:28px">🍿</div><div class="sub" style="margin-top:9px">Nothing here yet. Search for a title and add it.</div></div>`}
     <div style="height:20px"></div></div>`,p=>{
-    $$('[data-lm]',p).forEach(b=>b.onclick=()=>openMovie({id:+b.dataset.lm,title:S.movies[b.dataset.lm].title,poster_path:S.movies[b.dataset.lm].poster}));
+    $$('[data-lm]',p).forEach(b=>b.onclick=()=>{const mt=b.dataset.mt||'movie';const rec=store(mt)[b.dataset.lm];openItem({id:+b.dataset.lm,title:rec.title,poster_path:rec.poster},mt);});
   });
 }
 function localPoster(m){
-  return `<button class="pressable" data-lm="${m.id}" style="text-align:left;width:100%;min-width:0;display:block">
-    <div class="poster" style="width:100%;aspect-ratio:2/3">${m.poster?`<img loading="lazy" src="${IMG(m.poster,'w342')}">`:'<div class="ph">🎞️</div>'}</div>
+  const mt=m.mt||'movie';
+  return `<button class="pressable" data-lm="${m.id}" data-mt="${mt}" style="text-align:left;width:100%;min-width:0;display:block">
+    <div class="poster" style="width:100%;aspect-ratio:2/3">${m.poster?`<img loading="lazy" src="${IMG(m.poster,'w342')}" onerror="imgFallback(this,'🎞️')">`:'<div class="ph">🎞️</div>'}
+      ${mt==='tv'?'<div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.6);border-radius:6px;padding:2px 5px;font-size:9px;font-weight:800;letter-spacing:.02em">TV</div>':''}</div>
     <div style="font-size:12px;font-weight:600;margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(m.title)}</div>
     <div class="tiny">${m.rating?'★'.repeat(Math.round(m.rating/2)):m.year||''}</div></button>`;
 }
-async function openMovie(base){
-  const local=ensureMv(base);save(true);
+async function openItem(base,mt='movie'){
+  const local=ensureItem(base,mt);save(true);
   const html=`<div id="mdet"><div style="display:flex;justify-content:center;padding:60px"><div class="spin"></div></div></div>`;
-  const p=pushPage(base.title||'Movie',html);
+  const p=pushPage(base.title||base.name||(mt==='tv'?'Show':'Movie'),html);
   let d=null,credits=null,similar=null,videos=null;
-  try{d=await tmdb('/movie/'+base.id,{append_to_response:'credits,similar,videos'});credits=d.credits;similar=d.similar;videos=d.videos;}catch(e){}
-  const dirs=(credits?.crew||[]).filter(c=>c.job==='Director').map(c=>c.name).join(', ');
+  try{d=await tmdb('/'+mt+'/'+base.id,{append_to_response:'credits,similar,videos'});credits=d.credits;similar=d.similar;videos=d.videos;}catch(e){}
+  const dTitle=d?.title||d?.name||base.title||base.name;
+  const dDate=d?.release_date||d?.first_air_date||'';
+  const dirs=mt==='tv'?(d?.created_by||[]).map(c=>c.name).join(', '):(credits?.crew||[]).filter(c=>c.job==='Director').map(c=>c.name).join(', ');
   const cast=(credits?.cast||[]).slice(0,14);
   const trailer=(videos?.results||[]).find(v=>v.site==='YouTube'&&/Trailer|Teaser/i.test(v.type));
   local.genres=(d?.genres||[]).map(g=>g.name);
-  const mins=d?.runtime||0;
+  const mins=mt==='tv'?((d?.episode_run_time||[])[0]||0):(d?.runtime||0);
+  const extraMeta=mt==='tv'?`${d?.number_of_seasons?d.number_of_seasons+' season'+(d.number_of_seasons>1?'s':''):''}${d?.number_of_episodes?' · '+d.number_of_episodes+' episodes':''}`:'';
   $('#mdet',p).innerHTML=`
    <div style="position:relative;margin-top:-1px">
-     ${d?.backdrop_path?`<img src="${IMG(d.backdrop_path,'w780')}" style="width:100%;aspect-ratio:16/9;object-fit:cover;display:block">`:'<div style="width:100%;aspect-ratio:16/9;background:linear-gradient(135deg,#6E8BFF33,#B07CFF22)"></div>'}
+     ${d?.backdrop_path?`<img src="${IMG(d.backdrop_path,'w780')}" style="width:100%;aspect-ratio:16/9;object-fit:cover;display:block" onerror="imgFallback(this,'🎬')">`:'<div style="width:100%;aspect-ratio:16/9;background:linear-gradient(135deg,#6E8BFF33,#B07CFF22)"></div>'}
      <div style="position:absolute;inset:0;background:linear-gradient(to bottom,transparent 30%,var(--bg))"></div>
    </div>
    <div class="wrap" style="margin-top:-64px;position:relative">
      <div style="display:flex;gap:14px;align-items:flex-end">
-       <div class="poster" style="width:104px;height:156px;flex:0 0 auto">${(d?.poster_path||local.poster)?`<img src="${IMG(d?.poster_path||local.poster,'w342')}">`:'<div class="ph">🎞️</div>'}</div>
+       <div class="poster" style="width:104px;height:156px;flex:0 0 auto">${(d?.poster_path||local.poster)?`<img src="${IMG(d?.poster_path||local.poster,'w342')}" onerror="imgFallback(this,'🎞️')">`:'<div class="ph">🎞️</div>'}</div>
        <div style="flex:1;min-width:0;padding-bottom:4px">
-         <div style="font-size:21px;font-weight:780;letter-spacing:-.032em;line-height:1.16">${esc(d?.title||base.title)}</div>
-         <div class="tiny" style="margin-top:5px">${(d?.release_date||'').slice(0,4)} ${mins?'· '+Math.floor(mins/60)+'h '+mins%60+'m':''} · ★ ${(d?.vote_average||0).toFixed(1)}</div>
-         <div class="tiny" style="margin-top:3px">${esc((d?.genres||[]).map(g=>g.name).join(' · '))}</div>
+         <div style="font-size:21px;font-weight:780;letter-spacing:-.032em;line-height:1.16">${esc(dTitle)}</div>
+         <div class="tiny" style="margin-top:5px">${dDate.slice(0,4)} ${mins?'· '+Math.floor(mins/60)+'h '+mins%60+'m':''} · ★ ${(d?.vote_average||0).toFixed(1)}</div>
+         <div class="tiny" style="margin-top:3px">${esc((d?.genres||[]).map(g=>g.name).join(' · '))}${extraMeta?' · '+extraMeta:''}</div>
        </div>
      </div>
      <div class="grid2" style="margin-top:16px">
-       <button class="btn ghost sm" id="bWatched" style="padding:11px 6px">${local.watched?'✓ Watched':'Mark Watched'}</button>
+       <button class="btn ghost sm" id="bWatched" style="padding:11px 6px">${local.watched?'✓ Watched':(mt==='tv'?'Mark Watched':'Mark Watched')}</button>
        <button class="btn ghost sm" id="bList" style="padding:11px 6px">${local.watchlist?'📌 Listed':'+ Watchlist'}</button>
      </div>
      <div class="card" style="margin-top:14px;padding:15px">
@@ -1436,20 +1715,20 @@ async function openMovie(base){
      <div class="sec-title" style="margin-top:22px">Overview</div>
      <div class="sub" style="color:var(--txt);line-height:1.55">${esc(d?.overview||'No overview available.')}</div>
      <div class="group" style="margin-top:16px">
-       <div class="row"><div class="lbl" style="font-size:14.5px">Director</div><div class="val" style="font-size:13.5px">${esc(dirs||'—')}</div></div>
-       <div class="row"><div class="lbl" style="font-size:14.5px">Studio</div><div class="val" style="font-size:13.5px">${esc((d?.production_companies||[])[0]?.name||'—')}</div></div>
+       <div class="row"><div class="lbl" style="font-size:14.5px">${mt==='tv'?'Creator':'Director'}</div><div class="val" style="font-size:13.5px">${esc(dirs||'—')}</div></div>
+       <div class="row"><div class="lbl" style="font-size:14.5px">${mt==='tv'?'Network':'Studio'}</div><div class="val" style="font-size:13.5px">${esc((d?.production_companies||d?.networks||[])[0]?.name||'—')}</div></div>
        <div class="row"><div class="lbl" style="font-size:14.5px">Language</div><div class="val" style="font-size:13.5px">${(d?.spoken_languages||[])[0]?.english_name||d?.original_language?.toUpperCase()||'—'}</div></div>
-       <div class="row"><div class="lbl" style="font-size:14.5px">Release</div><div class="val" style="font-size:13.5px">${d?.release_date||'—'}</div></div>
+       <div class="row"><div class="lbl" style="font-size:14.5px">${mt==='tv'?'First Aired':'Release'}</div><div class="val" style="font-size:13.5px">${dDate||'—'}</div></div>
      </div>
    </div>
    ${cast.length?`<div class="wrap"><div class="sec-title" style="margin-top:22px">Cast</div></div>
    <div class="hscroll">${cast.map(c=>`<div style="width:74px;text-align:center">
-     <div style="width:74px;height:74px;border-radius:50%;overflow:hidden;background:var(--card-2)">${c.profile_path?`<img loading="lazy" src="${IMG(c.profile_path,'w185')}" style="width:100%;height:100%;object-fit:cover">`:'<div class="ph" style="height:100%">👤</div>'}</div>
+     <div style="width:74px;height:74px;border-radius:50%;overflow:hidden;background:var(--card-2)">${c.profile_path?`<img loading="lazy" src="${IMG(c.profile_path,'w185')}" style="width:100%;height:100%;object-fit:cover" onerror="imgFallback(this,'👤')">`:'<div class="ph" style="height:100%">👤</div>'}</div>
      <div style="font-size:11.5px;font-weight:600;margin-top:6px;line-height:1.2">${esc(c.name)}</div>
      <div class="tiny" style="font-size:10px">${esc(c.character||'')}</div></div>`).join('')}</div>`:''}
    <div class="wrap">
      <div class="sec-title" style="margin-top:22px">Review & Notes</div>
-     <textarea class="inp" id="mrev" rows="4" placeholder="What did this film make you feel?">${esc(local.review)}</textarea>
+     <textarea class="inp" id="mrev" rows="4" placeholder="What did this make you feel?">${esc(local.review)}</textarea>
      <textarea class="inp" id="mnotes" rows="2" style="margin-top:10px" placeholder="Private notes…">${esc(local.notes)}</textarea>
      <div class="eyebrow" style="margin:16px 0 8px">Tags</div>
      <div style="display:flex;flex-wrap:wrap;gap:7px" id="tags">
@@ -1460,8 +1739,8 @@ async function openMovie(base){
        ${S.genres.length?S.genres.map(g=>`<button class="chip${local.userGenres.includes(g.id)?' on':''}" data-ug="${g.id}" style="border-color:${g.color||'var(--stroke)'};color:${g.color||'var(--txt)'}">${g.emoji||'🎭'} ${esc(g.name)}</button>`).join(''):'<div class="sub">Create a genre in My Genres to start assigning films.</div>'}
      </div>
    </div>
-   ${(similar?.results||[]).length?`<div class="wrap"><div class="sec-title" style="margin-top:24px">Similar Movies</div></div>
-   <div class="hscroll" id="simrow">${similar.results.slice(0,12).map(m=>posterCard(m,110)).join('')}</div>`:''}
+   ${(similar?.results||[]).length?`<div class="wrap"><div class="sec-title" style="margin-top:24px">Similar ${mt==='tv'?'Shows':'Movies'}</div></div>
+   <div class="hscroll" id="simrow">${similar.results.slice(0,12).map(m=>posterCard(m,mt,110)).join('')}</div>`:''}
    <div style="height:26px"></div>`;
   bindPosters($('#simrow',p)||p);
   const sync=()=>{save(true);};
@@ -1476,8 +1755,10 @@ async function openMovie(base){
   $$('[data-ug]',p).forEach(b=>b.onclick=()=>{const g=b.dataset.ug;local.userGenres=local.userGenres.includes(g)?local.userGenres.filter(x=>x!==g):[...local.userGenres,g];b.classList.toggle('on');haptic();sync();});
   if(trailer)$('#trail',p).onclick=()=>{window.open(`https://www.youtube.com/watch?v=${trailer.key}`,'_blank','noopener,noreferrer'); toast('Opened trailer in a new tab');};
 }
+function openMovie(base){return openItem(base,'movie');}
 function openFilmStats(){
   const all=Object.values(S.movies),watched=all.filter(m=>m.watched);
+  const showsAll=Object.values(S.shows),showsWatched=showsAll.filter(m=>m.watched);
   const rated=all.filter(m=>m.rating>0);
   const avg=rated.length?(rated.reduce((a,m)=>a+m.rating,0)/rated.length).toFixed(1):'—';
   const gcount={};watched.forEach(m=>(m.genres||[]).forEach(g=>gcount[g]=(gcount[g]||0)+1));
@@ -1488,9 +1769,9 @@ function openFilmStats(){
   pushPage('Statistics',`<div class="wrap" style="padding-top:10px">
     <div class="grid2">
       <div class="stat"><div class="n">${watched.length}</div><div class="l">Movies Watched</div></div>
+      <div class="stat"><div class="n">${showsWatched.length}</div><div class="l">Shows Watched</div></div>
       <div class="stat"><div class="n">${avg}</div><div class="l">Average Rating</div></div>
       <div class="stat"><div class="n" style="font-size:19px">${topG?topG[0]:'—'}</div><div class="l">Favorite Genre</div></div>
-      <div class="stat"><div class="n">${Math.round(watched.length*1.9)}h</div><div class="l">Total Watch Time</div></div>
     </div>
     <div class="sec-title" style="margin-top:22px">Monthly Watch Count</div>
     <div class="card" style="padding:16px">${weekBars(mv,months.map(d=>d.toLocaleDateString('en',{month:'short'})[0]+''),'linear-gradient(180deg,#B07CFF,#6E8BFF)')}</div>
@@ -1502,7 +1783,7 @@ function openFilmStats(){
       <div style="font-size:30px;font-weight:800;letter-spacing:-.04em;margin-top:6px">${watched.filter(m=>(m.dateWatched||'').startsWith(String(new Date().getFullYear()))).length} films</div>
       <div class="sub" style="margin-top:6px">${topG?`Mostly ${topG[0]}. `:''}${best[0]?`Your favorite was ${esc(best[0].title)}.`:'Rate more to unlock insights.'}</div>
     </div><div style="height:24px"></div></div>`,p=>{
-    animBars(p);$$('[data-lm]',p).forEach(b=>b.onclick=()=>openMovie({id:+b.dataset.lm,title:S.movies[b.dataset.lm].title,poster_path:S.movies[b.dataset.lm].poster}));
+    animBars(p);$$('[data-lm]',p).forEach(b=>b.onclick=()=>openItem({id:+b.dataset.lm,title:S.movies[b.dataset.lm].title,poster_path:S.movies[b.dataset.lm].poster},'movie'));
   });
 }
 /* ─────────── READING ─────────── */
@@ -1711,7 +1992,6 @@ function openBook(id){
     $('#bdel',p).onclick=()=>{S.books=S.books.filter(x=>x.id!==id);save();popPage();setTimeout(()=>SCREENS.reading($('#scr-reading')),50);};
   });
 }
-const pdfDocCache=new Map();
 function openPDFHub(){
   pushPage('PDF Reader',`<div class="wrap" style="padding-top:10px">
     <button class="btn primary" id="imp" style="width:100%">📄 Import PDF from iPhone</button>
@@ -1724,66 +2004,36 @@ function openPDFHub(){
     <div style="height:24px"></div></div>`,p=>{
     const draw=()=>{
       $('#pdflist',p).innerHTML=S.pdfs.length?S.pdfs.map(f=>`<div class="card pressable" data-pdf="${f.id}" style="padding:14px;display:flex;gap:12px;align-items:center">
-        ${f.thumb?`<img src="${f.thumb}" style="width:40px;height:52px;border-radius:7px;object-fit:cover;flex:0 0 auto;box-shadow:0 4px 10px rgba(0,0,0,.35)">`
-          :`<div style="width:40px;height:52px;border-radius:7px;background:linear-gradient(140deg,#FF6B6B33,#FF8A6B22);display:flex;align-items:center;justify-content:center;font-size:18px;flex:0 0 auto">${f.processing?'<div class="spin" style="width:16px;height:16px;border-width:2px"></div>':'📄'}</div>`}
+        <div style="width:40px;height:52px;border-radius:7px;background:linear-gradient(140deg,#FF6B6B33,#FF8A6B22);display:flex;align-items:center;justify-content:center;font-size:18px">📄</div>
         <div style="flex:1;min-width:0"><div style="font-weight:640;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(f.name)}</div>
-        <div class="tiny">${f.size} · ${f.processing?'Processing…':`page ${f.page||1} of ${f.pages||'…'}`} · ${f.mins||0} min read${f.data?'':' · preview only'}</div>
+        <div class="tiny">${f.size} · page ${f.page||1} · ${f.mins||0} min read</div>
         <div class="pbar" style="margin-top:6px;height:4px"><i style="width:${f.pct||0}%"></i></div></div><span class="chev">›</span></div>`).join('')
         :'<div class="card" style="padding:22px;text-align:center"><div style="font-size:26px">📄</div><div class="sub" style="margin-top:8px">Import a PDF to read it distraction-free.</div></div>';
       $$('[data-pdf]',p).forEach(b=>b.onclick=()=>openPDFReader(b.dataset.pdf));
     };draw();
     $('#imp',p).onclick=()=>$('#pdff',p).click();
-    $('#pdff',p).onchange=e=>{
-      const file=e.target.files[0];e.target.value='';if(!file)return;
-      if(file.type&&file.type!=='application/pdf'&&!/\.pdf$/i.test(file.name)){toast('That file isn\'t a PDF');return;}
-      const rec={id:uid(),name:file.name,size:(file.size/1048576).toFixed(1)+' MB',page:1,pages:null,pct:0,mins:0,bookmarks:[],highlights:[],notes:'',added:todayKey(),processing:true};
-      S.pdfs.unshift(rec);draw();island('Importing PDF…');
-      const r=new FileReader();
-      r.onerror=()=>{S.pdfs=S.pdfs.filter(x=>x.id!==rec.id);draw();toast('Could not read that file');};
-      r.onload=async()=>{
-        const dataUrl=r.result;
-        if(!window.pdfjsLib){rec.processing=false;rec.pages=rec.pages||1;draw();toast('PDF viewer failed to load — check your connection');return;}
-        try{
-          const doc=await pdfjsLib.getDocument(dataUrl).promise;
-          rec.pages=doc.numPages;
-          rec.data=dataUrl.length<4500000?dataUrl:null;
-          try{
-            const page=await doc.getPage(1);
-            const vp0=page.getViewport({scale:1});
-            const scale=140/vp0.width;
-            const vp=page.getViewport({scale});
-            const canvas=document.createElement('canvas');
-            canvas.width=vp.width;canvas.height=vp.height;
-            await page.render({canvasContext:canvas.getContext('2d'),viewport:vp}).promise;
-            rec.thumb=canvas.toDataURL('image/jpeg',.75);
-          }catch(te){}
-          rec.processing=false;
-          let ok=saveNow();
-          if(!ok&&rec.data){rec.data=null;ok=saveNow();}
-          if(!ok){S.pdfs=S.pdfs.filter(x=>x.id!==rec.id);saveNow();draw();toast('That PDF is too large to import');return;}
-          draw();toast(rec.data?'PDF imported':'Imported — file too large to store fully, showing preview only');island('PDF ready 📄');
-        }catch(err){
-          console.warn('PDF import failed',err);
-          S.pdfs=S.pdfs.filter(x=>x.id!==rec.id);saveNow();draw();
-          toast(/password/i.test(err?.name||err?.message||'')?'That PDF is password-protected':'Could not open that PDF — it may be corrupted');
-        }
-      };
-      r.readAsDataURL(file);
-    };
+    $('#pdff',p).onchange=e=>{const f=e.target.files[0];if(!f)return;
+      const rec={id:uid(),name:f.name,size:(f.size/1048576).toFixed(1)+' MB',page:1,pages:Math.max(12,Math.round(f.size/40000)),pct:0,mins:0,bookmarks:[],highlights:[],added:todayKey()};
+      const r=new FileReader();r.onload=()=>{try{rec.data=r.result.length<3500000?r.result:null;}catch(x){}
+        S.pdfs.unshift(rec);save();draw();toast('PDF imported');island('PDF ready 📄');};r.readAsDataURL(f);};
   });
 }
 function openPDFReader(id){
   const f=S.pdfs.find(x=>x.id===id);if(!f)return;
-  const canRender=!!(f.data&&window.pdfjsLib);
+  const viewer=f.data
+    ?`<div class="card" style="margin-top:14px;overflow:hidden;padding:0">
+        <iframe id="pdfframe" src="${f.data}#page=${f.page||1}&view=FitH" style="width:100%;height:64vh;border:none;display:block;background:#fff"></iframe>
+      </div>
+      <div class="tiny" style="margin-top:8px;text-align:center">If the preview looks blank, use Prev/Next below or reopen the file.</div>`
+    :`<div class="card" style="margin-top:14px;padding:20px">
+        <div class="reader"><p>This PDF is too large to preview inline on this device (over ~2.5 MB), so it's tracked without an in-app preview.</p>
+        <p>Your <mark>reading progress</mark>, bookmarks, highlights and time-read are still preserved locally between sessions. Re-importing a smaller/compressed copy of the file will enable the inline preview.</p></div>
+      </div>`;
   pushPage(f.name.replace(/\.pdf$/i,''),`<div style="padding:0 0 20px">
     <div class="wrap"><div class="card" style="padding:14px;display:flex;gap:10px;align-items:center">
-      <div style="flex:1"><div class="tiny" id="pageInd">Page ${f.page} of ${f.pages||'…'}</div><div class="pbar" style="margin-top:6px"><i id="pageBar" style="width:${Math.round(f.page/(f.pages||f.page)*100)}%"></i></div></div>
-      <button class="btn ghost sm" id="bmk">🔖</button><button class="btn ghost sm" id="srch">🔎</button></div></div>
-    ${canRender?
-      `<div class="wrap"><div class="card" id="pdfCanvasWrap" style="margin-top:14px;padding:14px;display:flex;justify-content:center;align-items:flex-start;min-height:240px"><div class="spin"></div></div></div>`
-      :`<div class="wrap"><div class="card" style="margin-top:14px;padding:20px">
-        <div class="reader"><p>${f.data?'The PDF viewer couldn\'t load — check your connection and reopen this file.':'This file was too large to store fully on-device, so it can\'t be shown here.'}</p>
-        <p>Your <mark>reading progress</mark>, bookmarks and notes are still tracked. ${f.data?'':'Re-import a smaller PDF (under ~4 MB) to read it in full.'}</p></div></div></div>`}
+      <div style="flex:1"><div class="tiny">Page ${f.page} of ${f.pages}</div><div class="pbar" style="margin-top:6px"><i style="width:${Math.round(f.page/f.pages*100)}%"></i></div></div>
+      <button class="btn ghost sm" id="bmk">🔖</button><button class="btn ghost sm" id="srch">🔎</button></div>
+    ${viewer}</div>
     <div class="wrap">
       <div style="display:flex;gap:10px;margin-top:16px">
         <button class="btn ghost" id="prev" style="flex:1">‹ Prev</button>
@@ -1794,52 +2044,12 @@ function openPDFReader(id){
       <div class="sec-title" style="margin-top:20px">Notes</div>
       <textarea class="inp" id="pn" rows="4" placeholder="Annotations…">${esc(f.notes||'')}</textarea>
     </div></div>`,p=>{
-    const drawB=()=>$('#bml',p).innerHTML=(f.bookmarks||[]).length?f.bookmarks.map(b=>`<div class="row pressable" data-gopage="${b}"><div class="ico" style="background:rgba(255,206,92,.18)">🔖</div><div class="lbl" style="font-size:15px">Page ${b}</div></div>`).join(''):'<div class="row"><div class="lbl sub">No bookmarks yet.</div></div>';
-    const updateHeader=()=>{
-      $('#pageInd',p).textContent=`Page ${f.page} of ${f.pages||'…'}`;
-      $('#pageBar',p).style.width=Math.round(f.page/(f.pages||f.page)*100)+'%';
-    };
-    let renderToken=0;
-    const renderPage=async()=>{
-      if(!canRender)return;
-      const wrap=$('#pdfCanvasWrap',p);if(!wrap)return;
-      const myToken=++renderToken;
-      wrap.innerHTML='<div class="spin"></div>';
-      try{
-        let cached=pdfDocCache.get(id);
-        if(!cached){
-          const doc=await pdfjsLib.getDocument(f.data).promise;
-          cached={doc};pdfDocCache.set(id,cached);
-          if(f.pages!==doc.numPages){f.pages=doc.numPages;save(true);updateHeader();}
-        }
-        const page=await cached.doc.getPage(Math.min(f.page,cached.doc.numPages));
-        if(myToken!==renderToken)return;
-        const containerWidth=(wrap.clientWidth||332)-28;
-        const vp0=page.getViewport({scale:1});
-        const dpr=Math.min(window.devicePixelRatio||1,2.5);
-        const scale=(containerWidth/vp0.width)*dpr;
-        const vp=page.getViewport({scale});
-        const canvas=document.createElement('canvas');
-        canvas.width=Math.round(vp.width);canvas.height=Math.round(vp.height);
-        canvas.style.width=Math.round(vp.width/dpr)+'px';
-        canvas.style.height=Math.round(vp.height/dpr)+'px';
-        canvas.style.borderRadius='8px';
-        canvas.style.boxShadow='0 10px 30px rgba(0,0,0,.35)';
-        await page.render({canvasContext:canvas.getContext('2d'),viewport:vp}).promise;
-        if(myToken!==renderToken)return;
-        wrap.innerHTML='';wrap.appendChild(canvas);
-      }catch(err){
-        console.warn('PDF render failed',err);
-        if(myToken===renderToken)wrap.innerHTML='<div class="sub" style="padding:20px;text-align:center">Couldn\'t render this page.</div>';
-      }
-    };
-    const goPage=n=>{f.page=Math.max(1,Math.min(f.pages||n,n));f.pct=Math.round(f.page/(f.pages||f.page)*100);save(true);updateHeader();renderPage();};
-    drawB();renderPage();
+    const drawB=()=>$('#bml',p).innerHTML=(f.bookmarks||[]).length?f.bookmarks.map(b=>`<div class="row"><div class="ico" style="background:rgba(255,206,92,.18)">🔖</div><div class="lbl" style="font-size:15px">Page ${b}</div></div>`).join(''):'<div class="row"><div class="lbl sub">No bookmarks yet.</div></div>';
+    drawB();
     $('#bmk',p).onclick=()=>{f.bookmarks=f.bookmarks||[];if(!f.bookmarks.includes(f.page))f.bookmarks.push(f.page);save();drawB();toast('Bookmarked page '+f.page);};
     $('#srch',p).onclick=()=>toast('Search opens the in-document finder');
-    $('#prev',p).onclick=()=>goPage(f.page-1);
-    $('#next',p).onclick=()=>goPage(f.page+1);
-    $$('[data-gopage]',p).forEach(el=>el.onclick=()=>goPage(+el.dataset.gopage));
+    $('#prev',p).onclick=()=>{f.page=Math.max(1,f.page-1);f.pct=Math.round(f.page/f.pages*100);save(true);popPage();setTimeout(()=>openPDFReader(id),120);};
+    $('#next',p).onclick=()=>{f.page=Math.min(f.pages,f.page+1);f.pct=Math.round(f.page/f.pages*100);save(true);popPage();setTimeout(()=>openPDFReader(id),120);};
     $('#pn',p).oninput=e=>{f.notes=e.target.value;save(true);};
   });
 }
@@ -1964,7 +2174,7 @@ function editProfile(){
     $('#ps',b).onclick=()=>{S.user.name=$('#pn2',b).value.trim()||'Friend';S.user.mantra=$('#pm',b).value.trim();save();closeSheet();SCREENS.profile($('#scr-profile'));toast('Profile updated');};});
 }
 function openYIR(){
-  const watched=Object.values(S.movies).filter(m=>m.watched);
+  const watched=Object.values(S.movies).filter(m=>m.watched).concat(Object.values(S.shows).filter(m=>m.watched));
   const habitTotal=S.habits.reduce((a,h)=>a+Object.values(h.log).filter(Boolean).length,0);
   pushPage('Year in Review',`<div class="wrap" style="padding-top:14px">
     ${[['🔁',habitTotal,'habits completed','#6E8BFF'],['🏋️',S.workouts.length,'workouts finished','#FF8A6B'],['✍️',S.journals.length,'journal entries','#43E0B0'],['📚',S.books.filter(b=>b.status==='finished').length,'books read','#FFCE5C'],['🎬',watched.length,'films watched','#B07CFF'],['🌊',S.urges.length,'urges surfed','#FF6B95']].map((r,i)=>`
@@ -2180,6 +2390,7 @@ function boot(){
     $('#tabbar').classList.remove('hidden');
     window.matchMedia('(prefers-color-scheme: light)').addEventListener('change',()=>{if(S.theme==='system')applyTheme();});
     document.addEventListener('keydown',e=>{if(e.key==='Escape'){if($('#sheetwrap').classList.contains('open'))closeSheet();else if(pageStack.length)popPage();}});
+    if(S.tmdb.key&&S.tmdb.ok)setTimeout(()=>syncMCU(false),2500);
   };
   setTimeout(finishBoot,1250);
 }
